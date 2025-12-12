@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # KONFIGURASI
 # ==========================================
-st.set_page_config(page_title="Auto Shorts Pro", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Auto Shorts Stealth", page_icon="🥷", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -28,10 +28,8 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     try:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
-        try:
-            font = ImageFont.load_default()
-        except:
-            return None
+        try: font = ImageFont.load_default()
+        except: return None
 
     try:
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
@@ -53,22 +51,33 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
 
 @st.cache_resource
 def load_whisper_model():
-    # Gunakan CPU di Streamlit Cloud
     return whisper.load_model("base", device="cpu")
 
 def download_video(url, cookie_path=None):
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
-    # Opsi download yang lebih agresif menyamar sebagai Android
+    # --- TEKNIK ANTI-BOT / STEALTH MODE ---
     ydl_opts = {
         'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
         'outtmpl': f"{TEMP_DIR}/raw_video",
         'merge_output_format': 'mp4',
         'quiet': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}, # Menyamar jadi HP
+        'nocheckcertificate': True,
+        
+        # 1. Menyamar sebagai Browser Chrome Windows Terbaru
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        
+        # 2. Menyamar sebagai Aplikasi Android / iOS (Sangat Efektif!)
+        # Ini membuat YouTube mengira request datang dari HP, bukan server web.
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        }
     }
     
+    # 3. Menggunakan Cookies (Kartu AS)
     if cookie_path:
         ydl_opts['cookiefile'] = cookie_path
     
@@ -86,12 +95,12 @@ def download_video(url, cookie_path=None):
                 if files: os.replace(files[0], output_path)
         return True
     except Exception as e:
-        st.error(f"Gagal Download dari YouTube: {e}")
+        st.error(f"Gagal Download: {e}")
         return False
 
 def generate_intervals(duration, num_clips, clip_len):
     intervals = []
-    start_safe = duration * 0.05 # Hanya skip 5% awal
+    start_safe = duration * 0.05
     end_safe = duration * 0.95
     playable = end_safe - start_safe
     
@@ -113,10 +122,9 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    # --- CENTER CROP (NO MEDIAPIPE) ---
+    # Center Crop
     w, h = clip.size
     target_ratio = 9/16
-    
     if w / h > target_ratio:
         new_w = h * target_ratio
         x1 = (w - new_w) // 2
@@ -124,44 +132,29 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     else:
         crop_clip = clip
 
-    # Resize ke 720x1280 (Cukup untuk TikTok & Ringan)
     final_clip = crop_clip.resize(height=1280) 
     
-    # --- SUBTITLES ---
+    # Subtitles
     subs = []
     if enable_subs:
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
-        
         for w in valid_words:
             text = w.get('word', w.get('text', '')).strip().upper()
             if not text: continue
-
             color = 'white' if len(text) <= 3 else '#FFD700'
             
-            img_array = create_text_image(
-                text, 
-                final_clip.w, 
-                final_clip.h, 
-                font_size=70, 
-                color=color, 
-                stroke_width=4
-            )
-            
+            img_array = create_text_image(text, final_clip.w, final_clip.h, font_size=70, color=color, stroke_width=4)
             if img_array is not None:
                 txt_clip = (ImageClip(img_array)
                             .set_start(w['start'] - start)
                             .set_end(w['end'] - start)
                             .set_duration(w['end'] - w['start'])
                             .set_position('center'))
-                
                 subs.append(txt_clip)
             
-    # Render
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
-    
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
-    
     full_clip.close()
     final.close()
     return out_path
@@ -170,121 +163,78 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # UI FRONTEND
 # ==========================================
 
-st.title("⚡ Auto Shorts (Anti-Error Edition)")
-st.caption("Solusi Pasti: Upload video manual jika download error.")
+st.title("🥷 Auto Shorts (Stealth Mode)")
+st.caption("Mode Penyamaran: Menggunakan Client Android & Cookies untuk bypass blokir.")
 
 with st.sidebar:
-    st.header("1. Sumber Video")
-    # Pilihan Metode Input
-    input_method = st.radio("Pilih Cara Input:", ["Upload Video (Pasti Berhasil)", "Link YouTube (Sering Error 403)"])
+    st.header("⚙️ Konfigurasi")
+    url = st.text_input("URL YouTube")
     
-    file_upload = None
-    url_input = None
+    st.divider()
+    st.info("💡 TIPS: Upload 'cookies.txt' agar 100% Berhasil.")
+    uploaded_cookie = st.file_uploader("Upload cookies.txt (Opsional)", type=["txt"])
+    
     cookie_path = None
-    
-    if input_method == "Upload Video (Pasti Berhasil)":
-        file_upload = st.file_uploader("Upload file .mp4", type=["mp4", "mov", "mkv"])
-    else:
-        url_input = st.text_input("URL YouTube")
-        st.info("Upload cookies.txt jika 403 Forbidden:")
-        uploaded_cookie = st.file_uploader("Upload cookies.txt", type=["txt"])
-        if uploaded_cookie:
-            cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
-            with open(cookie_path, "wb") as f:
-                f.write(uploaded_cookie.getbuffer())
+    if uploaded_cookie:
+        cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
+        with open(cookie_path, "wb") as f:
+            f.write(uploaded_cookie.getbuffer())
+        st.success("Cookies dimuat!")
 
     st.divider()
-    st.header("2. Pengaturan")
     num_clips = st.slider("Jumlah Klip", 1, 3, 1)
     duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
     btn_process = st.button("🚀 Mulai Proses", type="primary")
 
-# LOGIKA PROSES UTAMA
 if btn_process:
-    processing_ok = False
-    
-    # STEP 1: SIAPKAN VIDEO SUMBER
-    source_file = f"{TEMP_DIR}/source.mp4"
-    
-    if input_method == "Upload Video (Pasti Berhasil)":
-        if file_upload is not None:
-            with st.spinner("Menyimpan video yang diupload..."):
-                with open(source_file, "wb") as f:
-                    f.write(file_upload.getbuffer())
-            processing_ok = True
-        else:
-            st.error("Mohon upload file video terlebih dahulu.")
-            
-    else: # Metode YouTube
-        if url_input:
-            with st.spinner("Mencoba download dari YouTube..."):
-                if download_video(url_input, cookie_path):
-                    processing_ok = True
-                else:
-                    st.error("Gagal download. YouTube memblokir IP Cloud ini. Silakan gunakan opsi 'Upload Video' di atas.")
-        else:
-            st.error("Mohon masukkan URL.")
-
-    # STEP 2: PROSES JIKA VIDEO ADA
-    if processing_ok:
+    if not url:
+        st.error("Masukkan URL!")
+    else:
+        ph = st.empty()
         bar = st.progress(0)
-        st.info("Video siap! Memulai pemrosesan...")
         
-        # Transkripsi
-        all_words = []
-        if use_subtitle:
-            st.warning("⏳ Sedang mentranskrip audio (Whisper)... Ini memakan waktu karena menggunakan CPU.")
-            try:
-                model = load_whisper_model()
-                temp_audio = f"{TEMP_DIR}/audio.wav"
-                
-                # Ekstrak audio
-                vc = VideoFileClip(source_file)
-                vc.audio.write_audiofile(temp_audio, logger=None)
-                vc.close()
-                
-                # Transcribe
-                result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
-                all_words = [w for s in result['segments'] for w in s['words']]
-            except Exception as e:
-                st.error(f"Gagal Transkripsi: {e}")
-                use_subtitle = False
-        
-        bar.progress(40)
-        
-        # Potong & Edit
-        clip_temp = VideoFileClip(source_file)
-        total_dur = clip_temp.duration
-        clip_temp.close()
-        
-        intervals = generate_intervals(total_dur, num_clips, duration)
-        
-        cols = st.columns(len(intervals))
-        
-        for i, data in enumerate(intervals):
-            st.write(f"🎬 Sedang merender Klip {i+1}...")
-            try:
-                out_file = process_video_clip(
-                    source_file, 
-                    data['start'], 
-                    data['end'], 
-                    f"Short_{i+1}", 
-                    all_words,
-                    use_subtitle
-                )
-                with cols[i]:
-                    st.video(out_file)
-                    with open(out_file, "rb") as f:
-                        st.download_button(
-                            label=f"⬇️ Download {i+1}",
-                            data=f,
-                            file_name=f"Short_{i+1}.mp4",
-                            mime="video/mp4"
-                        )
-            except Exception as e:
-                st.error(f"Error render: {e}")
-                
-        bar.progress(100)
-        st.success("✅ Selesai!")
+        ph.info("📥 Mendownload (Mode Penyamaran Android)...")
+        if download_video(url, cookie_path):
+            bar.progress(20)
+            source_file = f"{TEMP_DIR}/source.mp4"
+            
+            all_words = []
+            if use_subtitle:
+                ph.info("🎤 Transkripsi Audio...")
+                try:
+                    model = load_whisper_model()
+                    temp_audio = f"{TEMP_DIR}/audio.wav"
+                    vc = VideoFileClip(source_file)
+                    vc.audio.write_audiofile(temp_audio, logger=None)
+                    vc.close()
+                    result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
+                    all_words = [w for s in result['segments'] for w in s['words']]
+                except Exception as e:
+                    st.warning(f"Gagal Transkripsi: {e}")
+                    use_subtitle = False
+            
+            bar.progress(50)
+            
+            clip_temp = VideoFileClip(source_file)
+            intervals = generate_intervals(clip_temp.duration, num_clips, duration)
+            clip_temp.close()
+            
+            cols = st.columns(len(intervals))
+            for i, data in enumerate(intervals):
+                ph.info(f"🎬 Rendering Klip {i+1}...")
+                try:
+                    out_file = process_video_clip(source_file, data['start'], data['end'], f"Short_{i+1}", all_words, use_subtitle)
+                    with cols[i]:
+                        st.video(out_file)
+                        with open(out_file, "rb") as f:
+                            st.download_button(f"⬇️ Part {i+1}", f, file_name=f"Short_{i+1}.mp4")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            
+            bar.progress(100)
+            ph.success("✅ Selesai!")
+        else:
+            st.error("Gagal Download. IP Cloud mungkin diblokir total.")
+            st.warning("👉 Silakan Upload 'cookies.txt' di sidebar agar dikenali sebagai user asli.")
