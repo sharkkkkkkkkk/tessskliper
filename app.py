@@ -1,11 +1,43 @@
 import streamlit as st
 import os
 import numpy as np
-import whisper
-import torch
-from pytubefix import YouTube
-from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
-from PIL import Image, ImageDraw, ImageFont
+
+# Import dengan error handling untuk debugging
+try:
+    import whisper
+except ImportError as e:
+    st.error(f"Whisper import error: {e}")
+    st.stop()
+
+try:
+    import torch
+except ImportError as e:
+    st.error(f"Torch import error: {e}")
+    st.stop()
+
+try:
+    from pytubefix import YouTube
+except ImportError as e:
+    st.error(f"Pytubefix import error: {e}")
+    st.stop()
+
+try:
+    from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
+except ImportError as e:
+    st.error(f"""
+    MoviePy import error: {e}
+    
+    Pastikan file berikut ada di repository:
+    - requirements.txt
+    - packages.txt (dengan ffmpeg, imagemagick)
+    """)
+    st.stop()
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError as e:
+    st.error(f"Pillow import error: {e}")
+    st.stop()
 
 # ==========================================
 # KONFIGURASI HALAMAN
