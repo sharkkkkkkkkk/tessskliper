@@ -1,17 +1,16 @@
 import streamlit as st
 import os
+import requests
 import numpy as np
 import whisper
 import torch
-from pytubefix import YouTube
-from pytubefix.cli import on_progress
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# KONFIGURASI
+# KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="Auto Shorts (Pytubefix)", page_icon="🔧", layout="wide")
+st.set_page_config(page_title="Auto Shorts (Cobalt V10)", page_icon="🚀", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -46,43 +45,80 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     return np.array(img)
 
 # ==========================================
-# FUNGSI DOWNLOADER (PYTUBEFIX)
+# FUNGSI DOWNLOADER (COBALT V10 API)
 # ==========================================
-def download_with_pytubefix(url):
-    """
-    Download menggunakan Library Pytubefix (Alternative yt-dlp)
-    """
+def download_via_cobalt(url):
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
-    try:
-        st.info("🔄 Menghubungi YouTube via Pytubefix...")
-        
-        # Inisialisasi Object YouTube dengan user agent client 'ANDROID'
-        # Client 'ANDROID' biasanya lebih kebal blokir daripada 'WEB'
-        yt = YouTube(url, client='ANDROID')
-        
-        # Ambil stream video+audio terbaik yang formatnya mp4
-        st.write(f"Judul: {yt.title}")
-        
-        # Mendapatkan stream resolusi tertinggi (Max 720p biar ringan)
-        stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-        
-        if not stream:
-            # Fallback: jika tidak ada progressive, ambil apa saja
-            stream = yt.streams.filter(file_extension='mp4').first()
+    # DAFTAR SERVER COBALT (Primary & Backup)
+    # Kita gunakan server wuk.sh sebagai utama karena paling stabil untuk publik
+    instances = [
+        "https://cobalt.api.wuk.sh",      # Server Stabil
+        "https://api.cobalt.tools",       # Server Official (Sering RTO)
+        "https://api.server.cobalt.tools" # Backup
+    ]
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    # Payload Standar Cobalt v10
+    payload = {
+        "url": url,
+        "videoQuality": "720",
+        "filenamePattern": "basic",
+        "disableMetadata": True
+    }
+
+    success = False
+    
+    for base_url in instances:
+        try:
+            st.toast(f"Menghubungi server: {base_url}...")
             
-        if not stream:
-            st.error("Tidak ditemukan stream MP4 yang cocok.")
-            return False
+            # Request ke API
+            response = requests.post(
+                f"{base_url.rstrip('/')}", 
+                json=payload, 
+                headers=headers, 
+                timeout=20
+            )
+            
+            if response.status_code != 200:
+                continue
+                
+            data = response.json()
+            download_link = None
+            
+            # Cek berbagai kemungkinan format respon v10
+            if 'url' in data:
+                download_link = data['url']
+            elif 'picker' in data and len(data['picker']) > 0:
+                download_link = data['picker'][0]['url']
+            
+            if not download_link:
+                continue
 
-        st.info(f"⬇️ Mendownload resolusi: {stream.resolution}...")
-        stream.download(output_path=TEMP_DIR, filename="source.mp4")
-        return True
+            # Download File
+            st.info(f"⬇️ Mendownload Video dari {base_url}...")
+            
+            with requests.get(download_link, stream=True) as r:
+                r.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            success = True
+            break # Berhenti looping jika berhasil
 
-    except Exception as e:
-        st.error(f"Pytubefix Error: {e}")
-        return False
+        except Exception as e:
+            print(f"Server {base_url} gagal: {e}")
+            continue
+
+    return success
 
 # ==========================================
 # FUNGSI PROCESSSING
@@ -116,9 +152,10 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    # Center Crop
+    # Center Crop Logic
     w, h = clip.size
     target_ratio = 9/16
+    
     if w / h > target_ratio:
         new_w = h * target_ratio
         x1 = (w - new_w) // 2
@@ -128,15 +165,21 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 
     final_clip = crop_clip.resize(height=1280) 
     
+    # Subtitles
     subs = []
     if enable_subs:
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
         for w in valid_words:
             text = w.get('word', w.get('text', '')).strip().upper()
             if not text: continue
+            
             color = 'white' if len(text) <= 3 else '#FFD700'
             
-            img_array = create_text_image(text, final_clip.w, final_clip.h, font_size=70, color=color, stroke_width=4)
+            img_array = create_text_image(
+                text, final_clip.w, final_clip.h, 
+                font_size=70, color=color, stroke_width=4
+            )
+            
             if img_array is not None:
                 txt_clip = (ImageClip(img_array)
                             .set_start(w['start'] - start)
@@ -147,7 +190,9 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
             
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
+    
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
+    
     full_clip.close()
     final.close()
     return out_path
@@ -156,35 +201,35 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # UI FRONTEND
 # ==========================================
 
-st.title("🔧 Auto Shorts (Pytubefix)")
-st.caption("Solusi alternatif menggunakan library Pytubefix Client Android.")
+st.title("🚀 Auto Shorts (Cobalt Fixed)")
+st.caption("Solusi Bypass Error 403: Menggunakan Server Perantara.")
 
 with st.sidebar:
-    st.header("1. Sumber Video")
-    method = st.radio("Metode Input:", ["Link YouTube", "Upload Video (Paling Aman)"])
+    st.header("⚙️ Konfigurasi")
+    # Pilihan Metode
+    method = st.radio("Metode Input:", ["Link YouTube (Cobalt)", "Upload Manual (Paling Aman)"])
     
     url = None
     uploaded_file = None
     
-    if method == "Link YouTube":
-        url = st.text_input("Masukkan URL")
+    if method == "Link YouTube (Cobalt)":
+        url = st.text_input("URL YouTube")
     else:
         uploaded_file = st.file_uploader("Upload MP4", type=["mp4"])
         
     st.divider()
-    st.header("2. Settings")
     num_clips = st.slider("Jumlah Klip", 1, 3, 1)
     duration = st.slider("Durasi", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
-    btn_process = st.button("🚀 Mulai", type="primary")
+    btn_process = st.button("🚀 Mulai Proses", type="primary")
 
 if btn_process:
     processing_ok = False
     source_file = f"{TEMP_DIR}/source.mp4"
     
-    # 1. HANDLE INPUT
-    if method == "Upload Video (Paling Aman)":
+    # LOGIKA DOWNLOAD / UPLOAD
+    if method == "Upload Manual (Paling Aman)":
         if uploaded_file:
             with open(source_file, "wb") as f:
                 f.write(uploaded_file.getbuffer())
@@ -192,24 +237,26 @@ if btn_process:
         else:
             st.error("Upload video dulu!")
             
-    else: # YouTube Link
+    else: # Cobalt Method
         if url:
-            if download_with_pytubefix(url):
+            ph = st.empty()
+            ph.info("🔄 Menghubungi API Cobalt...")
+            if download_via_cobalt(url):
                 processing_ok = True
             else:
-                st.error("Gagal Download via Pytubefix. IP Server Streamlit mungkin diblokir total.")
-                st.warning("👉 Gunakan opsi 'Upload Video (Paling Aman)' di sidebar.")
+                st.error("❌ Gagal Download via Cobalt. Semua server sibuk.")
+                st.warning("👉 Gunakan opsi 'Upload Manual (Paling Aman)' di sidebar.")
         else:
             st.error("Masukkan URL!")
 
-    # 2. PROSES VIDEO
+    # LOGIKA PROCESSING
     if processing_ok:
         ph = st.empty()
         bar = st.progress(0)
         
         all_words = []
         if use_subtitle:
-            ph.info("🎤 Transkripsi Audio...")
+            ph.info("🎤 Transkripsi Audio (Whisper)...")
             try:
                 model = load_whisper_model()
                 temp_audio = f"{TEMP_DIR}/audio.wav"
@@ -232,13 +279,20 @@ if btn_process:
         for i, data in enumerate(intervals):
             ph.info(f"🎬 Rendering Klip {i+1}...")
             try:
-                out_file = process_video_clip(source_file, data['start'], data['end'], f"Short_{i+1}", all_words, use_subtitle)
+                out_file = process_video_clip(
+                    source_file, 
+                    data['start'], 
+                    data['end'], 
+                    f"Short_{i+1}", 
+                    all_words, 
+                    use_subtitle
+                )
                 with cols[i]:
                     st.video(out_file)
                     with open(out_file, "rb") as f:
-                        st.download_button(f"⬇️ Part {i+1}", f, file_name=f"Short_{i+1}.mp4")
+                        st.download_button(f"⬇️ Download {i+1}", f, file_name=f"Short_{i+1}.mp4")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error render: {e}")
         
         bar.progress(100)
         ph.success("✅ Selesai!")
