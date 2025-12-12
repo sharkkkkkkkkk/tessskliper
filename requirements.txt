@@ -1,7 +1,7 @@
 streamlit
-pytubefix
-openai-whisper
-moviepy==1.0.3
-opencv-python-headless
-numpy<2.0
+pytubefix>=10.3.6
+whisper
+torch
+moviepy
 Pillow
+numpy
