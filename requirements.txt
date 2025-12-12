@@ -1,5 +1,5 @@
 streamlit
-yt-dlp
+requests
 openai-whisper
 moviepy==1.0.3
 opencv-python-headless
