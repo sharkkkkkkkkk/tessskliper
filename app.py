@@ -26,23 +26,23 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     draw = ImageDraw.Draw(img)
     
     # Load Font Default (Aman untuk Server Linux/Cloud)
+    font = None
     try:
         # Coba font default sistem linux
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
-        # Fallback ke default PIL jika font tidak ketemu
         try:
-             font = ImageFont.load_default()
+            # Fallback ke default PIL
+            font = ImageFont.load_default()
         except:
-             # Fallback terakhir
-             return None
+            return None
 
-    # Hitung posisi tengah
+    # Hitung posisi tengah (FIXED TYPO HERE)
     try:
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
         text_w = bbox[2] - bbox[0]
-    exceptAttributeError:
-        # Fallback untuk versi Pillow lama
+    except AttributeError:
+        # Fallback untuk versi Pillow lama yang belum ada textbbox
         text_w = draw.textlength(text, font=font)
     
     x_pos = (video_width - text_w) // 2
@@ -60,7 +60,7 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
 
 @st.cache_resource
 def load_whisper_model():
-    # Gunakan CPU di Streamlit Cloud (Kecuali jika Anda punya GPU instance)
+    # Gunakan CPU di Streamlit Cloud (Gratis)
     device = "cpu"
     return whisper.load_model("base", device=device)
 
@@ -115,12 +115,10 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    # --- CENTER CROP LOGIC (PENGGANTI FACE TRACKING) ---
-    # Kita potong tengah frame menjadi rasio 9:16
+    # --- CENTER CROP LOGIC ---
     w, h = clip.size
     target_ratio = 9/16
     
-    # Jika video landscape (w > h)
     if w / h > target_ratio:
         new_w = h * target_ratio
         x1 = (w - new_w) // 2
@@ -164,7 +162,7 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
     
-    # Gunakan preset ultrafast agar tidak timeout di Streamlit Cloud
+    # Preset ultrafast agar deploy tidak timeout
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
     
     full_clip.close()
@@ -181,7 +179,7 @@ st.caption("Versi Ringan: Tanpa MediaPipe, Tanpa ImageMagick, Support Python 3.1
 with st.sidebar:
     st.header("⚙️ Konfigurasi")
     url = st.text_input("URL YouTube")
-    num_clips = st.slider("Jumlah Klip", 1, 3, 1) # Limit 3 agar tidak overload memory
+    num_clips = st.slider("Jumlah Klip", 1, 3, 1) # Limit 3 agar memory aman
     duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
@@ -202,10 +200,9 @@ if st.session_state.get('processing'):
         
         all_words = []
         if use_subtitle:
-            ph.info("🎤 Transkripsi Audio (Whisper CPU)... ini mungkin agak lama.")
+            ph.info("🎤 Transkripsi Audio (Whisper CPU)...")
             try:
                 model = load_whisper_model()
-                # Ekstrak audio
                 temp_audio = f"{TEMP_DIR}/audio.wav"
                 vc = VideoFileClip(source_file)
                 vc.audio.write_audiofile(temp_audio, logger=None)
@@ -214,7 +211,7 @@ if st.session_state.get('processing'):
                 result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
                 all_words = [w for s in result['segments'] for w in s['words']]
             except Exception as e:
-                st.warning(f"Gagal Transkripsi (Skip Subtitle): {e}")
+                st.warning(f"Gagal Transkripsi: {e}")
                 use_subtitle = False
         
         bar.progress(50)
