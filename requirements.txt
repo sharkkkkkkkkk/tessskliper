@@ -1,0 +1,8 @@
+streamlit
+yt-dlp
+openai-whisper
+moviepy==1.0.3
+mediapipe
+opencv-python-headless
+numpy<2.0
+Pillow
