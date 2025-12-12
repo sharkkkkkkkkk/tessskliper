@@ -1,8 +1,8 @@
 import streamlit as st
 import os
+import requests
 import numpy as np
 import whisper
-import yt_dlp
 import torch
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # KONFIGURASI
 # ==========================================
-st.set_page_config(page_title="Auto Shorts Stealth", page_icon="🥷", layout="wide")
+st.set_page_config(page_title="Auto Shorts (Cobalt API)", page_icon="🚀", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -25,9 +25,8 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     draw = ImageDraw.Draw(img)
     
     font = None
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
-    except:
+    try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+    except: 
         try: font = ImageFont.load_default()
         except: return None
 
@@ -46,57 +45,63 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     return np.array(img)
 
 # ==========================================
-# FUNGSI BACKEND
+# FUNGSI DOWNLOADER (VIA COBALT API)
+# ==========================================
+def download_via_cobalt(url):
+    """
+    Mendownload video menggunakan API Cobalt (Bypass YouTube 403)
+    """
+    output_path = f"{TEMP_DIR}/source.mp4"
+    if os.path.exists(output_path): os.remove(output_path)
+    
+    # 1. Minta Link Download ke Cobalt
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    payload = {
+        "url": url,
+        "vCodec": "h264", # Format video universal
+        "vQuality": "720",
+        "aFormat": "mp3",
+        "filenamePattern": "basic"
+    }
+
+    try:
+        st.write("🔄 Menghubungi Server Cobalt...")
+        response = requests.post(api_url, json=payload, headers=headers)
+        data = response.json()
+        
+        if 'url' not in data:
+            st.error(f"Gagal dapat link dari Cobalt: {data}")
+            return False
+            
+        direct_link = data['url']
+        
+        # 2. Download File dari Link Cobalt
+        st.write("⬇️ Sedang mendownload file video...")
+        with requests.get(direct_link, stream=True) as r:
+            r.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    
+        return True
+
+    except Exception as e:
+        st.error(f"Error Cobalt: {e}")
+        return False
+
+# ==========================================
+# FUNGSI PROCESSSING
 # ==========================================
 
 @st.cache_resource
 def load_whisper_model():
     return whisper.load_model("base", device="cpu")
-
-def download_video(url, cookie_path=None):
-    output_path = f"{TEMP_DIR}/source.mp4"
-    if os.path.exists(output_path): os.remove(output_path)
-    
-    # --- TEKNIK ANTI-BOT / STEALTH MODE ---
-    ydl_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'outtmpl': f"{TEMP_DIR}/raw_video",
-        'merge_output_format': 'mp4',
-        'quiet': True,
-        'nocheckcertificate': True,
-        
-        # 1. Menyamar sebagai Browser Chrome Windows Terbaru
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        
-        # 2. Menyamar sebagai Aplikasi Android / iOS (Sangat Efektif!)
-        # Ini membuat YouTube mengira request datang dari HP, bukan server web.
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web']
-            }
-        }
-    }
-    
-    # 3. Menggunakan Cookies (Kartu AS)
-    if cookie_path:
-        ydl_opts['cookiefile'] = cookie_path
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            temp_file = ydl.prepare_filename(info)
-            if os.path.exists(f"{TEMP_DIR}/raw_video.mp4"):
-                os.replace(f"{TEMP_DIR}/raw_video.mp4", output_path)
-            elif os.path.exists(temp_file):
-                os.replace(temp_file, output_path)
-            else:
-                import glob
-                files = glob.glob(f"{TEMP_DIR}/*.mp4")
-                if files: os.replace(files[0], output_path)
-        return True
-    except Exception as e:
-        st.error(f"Gagal Download: {e}")
-        return False
 
 def generate_intervals(duration, num_clips, clip_len):
     intervals = []
@@ -134,7 +139,6 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 
     final_clip = crop_clip.resize(height=1280) 
     
-    # Subtitles
     subs = []
     if enable_subs:
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
@@ -163,25 +167,12 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # UI FRONTEND
 # ==========================================
 
-st.title("🥷 Auto Shorts (Stealth Mode)")
-st.caption("Mode Penyamaran: Menggunakan Client Android & Cookies untuk bypass blokir.")
+st.title("🚀 Auto Shorts (Cobalt Engine)")
+st.caption("Bypass Error 403 menggunakan Cobalt API (Tanpa yt-dlp langsung).")
 
 with st.sidebar:
     st.header("⚙️ Konfigurasi")
     url = st.text_input("URL YouTube")
-    
-    st.divider()
-    st.info("💡 TIPS: Upload 'cookies.txt' agar 100% Berhasil.")
-    uploaded_cookie = st.file_uploader("Upload cookies.txt (Opsional)", type=["txt"])
-    
-    cookie_path = None
-    if uploaded_cookie:
-        cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
-        with open(cookie_path, "wb") as f:
-            f.write(uploaded_cookie.getbuffer())
-        st.success("Cookies dimuat!")
-
-    st.divider()
     num_clips = st.slider("Jumlah Klip", 1, 3, 1)
     duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
@@ -195,8 +186,10 @@ if btn_process:
         ph = st.empty()
         bar = st.progress(0)
         
-        ph.info("📥 Mendownload (Mode Penyamaran Android)...")
-        if download_video(url, cookie_path):
+        ph.info("📥 Meminta video via Cobalt...")
+        
+        # PANGGIL FUNGSI COBALT
+        if download_via_cobalt(url):
             bar.progress(20)
             source_file = f"{TEMP_DIR}/source.mp4"
             
@@ -236,5 +229,4 @@ if btn_process:
             bar.progress(100)
             ph.success("✅ Selesai!")
         else:
-            st.error("Gagal Download. IP Cloud mungkin diblokir total.")
-            st.warning("👉 Silakan Upload 'cookies.txt' di sidebar agar dikenali sebagai user asli.")
+            st.error("Gagal Download via Cobalt. Coba URL lain atau tunggu beberapa saat.")
