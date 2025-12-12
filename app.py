@@ -1,8 +1,6 @@
 import streamlit as st
 import os
-import cv2
 import numpy as np
-import mediapipe as mp
 import whisper
 import yt_dlp
 import torch
@@ -10,51 +8,50 @@ from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# KONFIGURASI SISTEM
+# KONFIGURASI
 # ==========================================
-st.set_page_config(page_title="Auto Shorts Clippers", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Auto Shorts Cloud", page_icon="⚡", layout="wide")
 
-# Folder Sementara
 TEMP_DIR = "temp"
 OUT_DIR = "output"
-if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
-if not os.path.exists(OUT_DIR): os.makedirs(OUT_DIR)
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
 
 # ==========================================
-# FUNGSI TEXT ENGINE (PENGGANTI IMAGEMAGICK)
+# FUNGSI TEXT ENGINE (PILLOW - CLOUD SAFE)
 # ==========================================
-
 def create_text_image(text, video_width, video_height, font_size=80, color='yellow', stroke_width=4):
-    """
-    Membuat gambar teks transparan menggunakan Pillow (Tanpa ImageMagick)
-    """
-    # 1. Buat Canvas Transparan
+    # Buat kanvas transparan
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # 2. Load Font (Coba load Arial, fallback ke default jika gagal)
+    # Load Font Default (Aman untuk Server Linux/Cloud)
     try:
-        # Untuk Windows: arialbd.ttf (Arial Bold)
-        # Untuk Linux/Colab: DejaVuSans-Bold.ttf
-        font_name = "dejavu-sans.bold-oblique.ttf" if os.name == 'nt' else "dejavu-sans.bold-oblique.ttf"
-        font = ImageFont.truetype(font_name, font_size)
+        # Coba font default sistem linux
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
-        font = ImageFont.load_default()
+        # Fallback ke default PIL jika font tidak ketemu
+        try:
+             font = ImageFont.load_default()
+        except:
+             # Fallback terakhir
+             return None
 
-    # 3. Hitung Posisi Tengah
-    # bbox = (left, top, right, bottom)
-    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Hitung posisi tengah
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+        text_w = bbox[2] - bbox[0]
+    exceptAttributeError:
+        # Fallback untuk versi Pillow lama
+        text_w = draw.textlength(text, font=font)
     
     x_pos = (video_width - text_w) // 2
-    y_pos = int(video_height * 0.75) # Posisi 75% ke bawah (Area aman TikTok)
+    y_pos = int(video_height * 0.70) # Posisi subtitle agak bawah
 
-    # 4. Gambar Teks dengan Outline (Stroke)
+    # Gambar teks dengan outline
     draw.text((x_pos, y_pos), text, font=font, fill=color, 
               stroke_width=stroke_width, stroke_fill='black')
     
-    # 5. Konversi ke Numpy Array untuk MoviePy
     return np.array(img)
 
 # ==========================================
@@ -63,7 +60,8 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
 
 @st.cache_resource
 def load_whisper_model():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Gunakan CPU di Streamlit Cloud (Kecuali jika Anda punya GPU instance)
+    device = "cpu"
     return whisper.load_model("base", device=device)
 
 def download_video(url):
@@ -117,47 +115,23 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    temp_sub = f"{TEMP_DIR}/sub_{name}.mp4"
-    clip.write_videofile(temp_sub, codec='libx264', audio_codec='aac', logger=None)
+    # --- CENTER CROP LOGIC (PENGGANTI FACE TRACKING) ---
+    # Kita potong tengah frame menjadi rasio 9:16
+    w, h = clip.size
+    target_ratio = 9/16
     
-    # --- FACE TRACKING ---
-    mp_face = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.6)
-    cap = cv2.VideoCapture(temp_sub)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    centers = []
+    # Jika video landscape (w > h)
+    if w / h > target_ratio:
+        new_w = h * target_ratio
+        x1 = (w - new_w) // 2
+        crop_clip = clip.crop(x1=x1, y1=0, width=new_w, height=h)
+    else:
+        crop_clip = clip
+
+    # Resize ke HD Vertikal
+    final_clip = crop_clip.resize(height=1280) 
     
-    while True:
-        ret, frame = cap.read()
-        if not ret: break
-        results = mp_face.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        x_c = width // 2
-        if results.detections:
-            for det in results.detections:
-                bbox = det.location_data.relative_bounding_box
-                x_c = int((bbox.xmin + bbox.width/2) * width)
-                break
-        centers.append(x_c)
-    cap.release()
-    
-    if not centers: centers = [width//2]
-    window = 15
-    if len(centers) > window:
-        centers = np.convolve(centers, np.ones(window)/window, mode='same')
-        
-    def crop_fn(get_frame, t):
-        idx = int(t * fps)
-        safe_idx = min(idx, len(centers)-1)
-        cx = centers[safe_idx]
-        img = get_frame(t)
-        h, w = img.shape[:2]
-        tw = int(h * 9/16)
-        x1 = max(0, min(w-tw, int(cx - tw/2)))
-        return img[:, x1:x1+tw]
-        
-    final_clip = clip.fl(crop_fn, apply_to=['mask']).resize(height=1920)
-    
-    # --- SUBTITLES DENGAN PILLOW (Tanpa ImageMagick) ---
+    # --- SUBTITLES ---
     subs = []
     if enable_subs:
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
@@ -166,54 +140,58 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
             text = w.get('word', w.get('text', '')).strip().upper()
             if not text: continue
 
-            # Logika Warna
-            color = 'white' if len(text) <= 3 else '#FFD700' # Hex Kuning Emas
+            color = 'white' if len(text) <= 3 else '#FFD700'
             
-            # Buat Gambar Teks pakai Pillow
             img_array = create_text_image(
                 text, 
                 final_clip.w, 
                 final_clip.h, 
-                font_size=85, 
+                font_size=70, 
                 color=color, 
-                stroke_width=5
+                stroke_width=4
             )
             
-            # Masukkan ke MoviePy ImageClip
-            txt_clip = (ImageClip(img_array)
-                        .set_start(w['start'] - start)
-                        .set_end(w['end'] - start)
-                        .set_duration(w['end'] - w['start'])
-                        .set_position('center')) # Posisi sudah diatur di create_text_image
+            if img_array is not None:
+                txt_clip = (ImageClip(img_array)
+                            .set_start(w['start'] - start)
+                            .set_end(w['end'] - start)
+                            .set_duration(w['end'] - w['start'])
+                            .set_position('center'))
+                
+                subs.append(txt_clip)
             
-            subs.append(txt_clip)
-            
-    # Render Akhir
+    # Render
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
+    
+    # Gunakan preset ultrafast agar tidak timeout di Streamlit Cloud
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
     
     full_clip.close()
     final.close()
-    if os.path.exists(temp_sub): os.remove(temp_sub)
     return out_path
 
 # ==========================================
-# INTERFACE
+# UI FRONTEND
 # ==========================================
 
-st.title("⚡ Auto Shorts (No ImageMagick)")
-st.caption("Solusi: Mudah dan Cepat")
+st.title("⚡ Auto Shorts (Cloud Edition)")
+st.caption("Versi Ringan: Tanpa MediaPipe, Tanpa ImageMagick, Support Python 3.13.")
 
 with st.sidebar:
-    st.header("⚙️ Settings")
-    url = st.text_input("YouTube URL")
-    num_clips = st.slider("Jumlah Klip", 1, 5, 3)
-    duration = st.slider("Durasi (detik)", 15, 60, 60)
-    use_subtitle = st.checkbox("Subtitle Hormozi Style", value=True)
-    btn_start = st.button("🚀 Proses Video", type="primary")
+    st.header("⚙️ Konfigurasi")
+    url = st.text_input("URL YouTube")
+    num_clips = st.slider("Jumlah Klip", 1, 3, 1) # Limit 3 agar tidak overload memory
+    duration = st.slider("Durasi (detik)", 15, 60, 30)
+    use_subtitle = st.checkbox("Subtitle", value=True)
+    
+    if st.button("🚀 Proses"):
+        if url:
+            st.session_state['processing'] = True
+        else:
+            st.error("Masukkan URL!")
 
-if btn_start and url:
+if st.session_state.get('processing'):
     ph = st.empty()
     bar = st.progress(0)
     
@@ -223,22 +201,28 @@ if btn_start and url:
         source_file = f"{TEMP_DIR}/source.mp4"
         
         all_words = []
-        source_clip = VideoFileClip(source_file)
-        total_dur = source_clip.duration
-        
-        # Transkripsi hanya jika subtitle aktif
         if use_subtitle:
-            ph.info("🎤 Transkripsi Audio (Whisper)...")
-            model = load_whisper_model()
-            source_clip.audio.write_audiofile(f"{TEMP_DIR}/audio.wav", logger=None)
-            result = model.transcribe(f"{TEMP_DIR}/audio.wav", word_timestamps=True, fp16=False)
-            all_words = [w for s in result['segments'] for w in s['words']]
+            ph.info("🎤 Transkripsi Audio (Whisper CPU)... ini mungkin agak lama.")
+            try:
+                model = load_whisper_model()
+                # Ekstrak audio
+                temp_audio = f"{TEMP_DIR}/audio.wav"
+                vc = VideoFileClip(source_file)
+                vc.audio.write_audiofile(temp_audio, logger=None)
+                vc.close()
+                
+                result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
+                all_words = [w for s in result['segments'] for w in s['words']]
+            except Exception as e:
+                st.warning(f"Gagal Transkripsi (Skip Subtitle): {e}")
+                use_subtitle = False
         
-        source_clip.close()
         bar.progress(50)
         
-        intervals = generate_intervals(total_dur, num_clips, duration)
-        st.success(f"Video {total_dur/60:.1f} menit -> {len(intervals)} Klip.")
+        # Proses Klip
+        source_clip = VideoFileClip(source_file)
+        intervals = generate_intervals(source_clip.duration, num_clips, duration)
+        source_clip.close()
         
         cols = st.columns(len(intervals))
         
@@ -256,11 +240,10 @@ if btn_start and url:
                 with cols[i]:
                     st.video(out_file)
                     with open(out_file, "rb") as f:
-                        st.download_button(f"⬇️ Part {i+1}", f, file_name=f"Short_{i+1}.mp4")
+                        st.download_button(f"⬇️ Download {i+1}", f, file_name=f"Short_{i+1}.mp4")
             except Exception as e:
-                st.error(f"Gagal: {e}")
-                
+                st.error(f"Gagal Klip {i+1}: {e}")
+        
         bar.progress(100)
         ph.success("✅ Selesai!")
-    else:
-        st.error("Gagal download.")
+        st.session_state['processing'] = False
