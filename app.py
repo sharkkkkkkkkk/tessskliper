@@ -1,16 +1,16 @@
 import streamlit as st
 import os
-import requests
 import numpy as np
 import whisper
 import torch
+from pytubefix import YouTube
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
 # KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="Auto Shorts (Cobalt V10)", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Auto Shorts (Pytubefix)", page_icon="🔧", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -45,80 +45,42 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
     return np.array(img)
 
 # ==========================================
-# FUNGSI DOWNLOADER (COBALT V10 API)
+# FUNGSI DOWNLOADER (PYTUBEFIX)
 # ==========================================
-def download_via_cobalt(url):
+def download_via_pytubefix(url):
+    """
+    Download video menggunakan Pytubefix dengan Client Android
+    """
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
-    # DAFTAR SERVER COBALT (Primary & Backup)
-    # Kita gunakan server wuk.sh sebagai utama karena paling stabil untuk publik
-    instances = [
-        "https://cobalt.api.wuk.sh",      # Server Stabil
-        "https://api.cobalt.tools",       # Server Official (Sering RTO)
-        "https://api.server.cobalt.tools" # Backup
-    ]
-    
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    # Payload Standar Cobalt v10
-    payload = {
-        "url": url,
-        "videoQuality": "720",
-        "filenamePattern": "basic",
-        "disableMetadata": True
-    }
+    try:
+        st.write("🔄 Menghubungi YouTube (Client Android)...")
+        
+        # PENTING: client='ANDROID' adalah kunci anti-403 saat ini
+        yt = YouTube(url, client='ANDROID')
+        
+        st.info(f"Judul: **{yt.title}**")
+        
+        # Cari stream MP4 Progressive (Video+Audio gabung) resolusi tertinggi (Max 720p)
+        # Kita pakai get_highest_resolution() yang biasanya aman
+        stream = yt.streams.get_highest_resolution()
+        
+        if not stream:
+            st.error("Tidak ditemukan stream yang cocok.")
+            return False
+            
+        st.write(f"⬇️ Mendownload resolusi: {stream.resolution}...")
+        
+        # Download ke folder temp dengan nama 'source.mp4'
+        stream.download(output_path=TEMP_DIR, filename="source.mp4")
+        
+        return True
 
-    success = False
-    
-    for base_url in instances:
-        try:
-            st.toast(f"Menghubungi server: {base_url}...")
-            
-            # Request ke API
-            response = requests.post(
-                f"{base_url.rstrip('/')}", 
-                json=payload, 
-                headers=headers, 
-                timeout=20
-            )
-            
-            if response.status_code != 200:
-                continue
-                
-            data = response.json()
-            download_link = None
-            
-            # Cek berbagai kemungkinan format respon v10
-            if 'url' in data:
-                download_link = data['url']
-            elif 'picker' in data and len(data['picker']) > 0:
-                download_link = data['picker'][0]['url']
-            
-            if not download_link:
-                continue
-
-            # Download File
-            st.info(f"⬇️ Mendownload Video dari {base_url}...")
-            
-            with requests.get(download_link, stream=True) as r:
-                r.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            
-            success = True
-            break # Berhenti looping jika berhasil
-
-        except Exception as e:
-            print(f"Server {base_url} gagal: {e}")
-            continue
-
-    return success
+    except Exception as e:
+        # Menangkap error spesifik pytubefix
+        st.error(f"Pytubefix Gagal: {e}")
+        return False
 
 # ==========================================
 # FUNGSI PROCESSSING
@@ -165,21 +127,15 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 
     final_clip = crop_clip.resize(height=1280) 
     
-    # Subtitles
     subs = []
     if enable_subs:
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
         for w in valid_words:
             text = w.get('word', w.get('text', '')).strip().upper()
             if not text: continue
-            
             color = 'white' if len(text) <= 3 else '#FFD700'
             
-            img_array = create_text_image(
-                text, final_clip.w, final_clip.h, 
-                font_size=70, color=color, stroke_width=4
-            )
-            
+            img_array = create_text_image(text, final_clip.w, final_clip.h, font_size=70, color=color, stroke_width=4)
             if img_array is not None:
                 txt_clip = (ImageClip(img_array)
                             .set_start(w['start'] - start)
@@ -190,9 +146,7 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
             
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
-    
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
-    
     full_clip.close()
     final.close()
     return out_path
@@ -201,25 +155,26 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # UI FRONTEND
 # ==========================================
 
-st.title("🚀 Auto Shorts (Cobalt Fixed)")
-st.caption("Solusi Bypass Error 403: Menggunakan Server Perantara.")
+st.title("🔧 Auto Shorts (Pytubefix)")
+st.caption("Solusi Download YouTube menggunakan Pytubefix (Client Android).")
 
 with st.sidebar:
-    st.header("⚙️ Konfigurasi")
-    # Pilihan Metode
-    method = st.radio("Metode Input:", ["Link YouTube (Cobalt)", "Upload Manual (Paling Aman)"])
+    st.header("⚙️ Sumber Video")
+    
+    # Pilihan Input: Link atau Upload
+    input_type = st.radio("Metode Input:", ["Link YouTube", "Upload Video Manual"])
     
     url = None
     uploaded_file = None
     
-    if method == "Link YouTube (Cobalt)":
-        url = st.text_input("URL YouTube")
+    if input_type == "Link YouTube":
+        url = st.text_input("Masukkan URL")
     else:
-        uploaded_file = st.file_uploader("Upload MP4", type=["mp4"])
+        uploaded_file = st.file_uploader("Upload file MP4", type=["mp4"])
         
     st.divider()
     num_clips = st.slider("Jumlah Klip", 1, 3, 1)
-    duration = st.slider("Durasi", 15, 60, 30)
+    duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
     btn_process = st.button("🚀 Mulai Proses", type="primary")
@@ -228,28 +183,25 @@ if btn_process:
     processing_ok = False
     source_file = f"{TEMP_DIR}/source.mp4"
     
-    # LOGIKA DOWNLOAD / UPLOAD
-    if method == "Upload Manual (Paling Aman)":
+    # 1. TAHAP INPUT (DOWNLOAD / UPLOAD)
+    if input_type == "Link YouTube":
+        if url:
+            if download_via_pytubefix(url):
+                processing_ok = True
+            else:
+                st.error("Gagal mendownload. Cobalah opsi 'Upload Video Manual'.")
+        else:
+            st.error("Masukkan URL!")
+            
+    else: # Upload Manual
         if uploaded_file:
             with open(source_file, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             processing_ok = True
         else:
-            st.error("Upload video dulu!")
-            
-    else: # Cobalt Method
-        if url:
-            ph = st.empty()
-            ph.info("🔄 Menghubungi API Cobalt...")
-            if download_via_cobalt(url):
-                processing_ok = True
-            else:
-                st.error("❌ Gagal Download via Cobalt. Semua server sibuk.")
-                st.warning("👉 Gunakan opsi 'Upload Manual (Paling Aman)' di sidebar.")
-        else:
-            st.error("Masukkan URL!")
+            st.error("Silakan upload file video terlebih dahulu.")
 
-    # LOGIKA PROCESSING
+    # 2. TAHAP PROSES
     if processing_ok:
         ph = st.empty()
         bar = st.progress(0)
@@ -263,6 +215,7 @@ if btn_process:
                 vc = VideoFileClip(source_file)
                 vc.audio.write_audiofile(temp_audio, logger=None)
                 vc.close()
+                
                 result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
                 all_words = [w for s in result['segments'] for w in s['words']]
             except Exception as e:
