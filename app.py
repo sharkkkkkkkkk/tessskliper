@@ -8,9 +8,9 @@ from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# KONFIGURASI
+# KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="Auto Shorts (Cobalt API)", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Auto Shorts (Cobalt Fixed)", page_icon="🚀", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -21,15 +21,18 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # FUNGSI TEXT ENGINE (PILLOW)
 # ==========================================
 def create_text_image(text, video_width, video_height, font_size=80, color='yellow', stroke_width=4):
+    """Membuat gambar teks transparan dengan Pillow"""
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
+    # Load Font (Fallback aman untuk Cloud)
     font = None
     try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except: 
         try: font = ImageFont.load_default()
         except: return None
 
+    # Hitung posisi tengah text
     try:
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
         text_w = bbox[2] - bbox[0]
@@ -37,66 +40,93 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
         text_w = draw.textlength(text, font=font)
     
     x_pos = (video_width - text_w) // 2
-    y_pos = int(video_height * 0.70)
+    y_pos = int(video_height * 0.70) # Posisi subtitle di 70% tinggi video
 
+    # Gambar teks dengan outline
     draw.text((x_pos, y_pos), text, font=font, fill=color, 
               stroke_width=stroke_width, stroke_fill='black')
     
     return np.array(img)
 
 # ==========================================
-# FUNGSI DOWNLOADER (VIA COBALT API)
+# FUNGSI DOWNLOADER (COBALT V10 API)
 # ==========================================
 def download_via_cobalt(url):
     """
-    Mendownload video menggunakan API Cobalt (Bypass YouTube 403)
+    Download video via Cobalt API v10 dengan Multiple Instances
     """
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
-    # 1. Minta Link Download ke Cobalt
-    api_url = "https://api.cobalt.tools/api/json"
+    # Daftar Server Cobalt (Utama & Cadangan)
+    instances = [
+        "https://api.cobalt.tools",       # Official
+        "https://cobalt.api.wuk.sh",      # Reliable Backup
+        "https://api.server.cobalt.tools" # Backup 2
+    ]
+    
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
+    # Payload v10
     payload = {
         "url": url,
-        "vCodec": "h264", # Format video universal
-        "vQuality": "720",
-        "aFormat": "mp3",
-        "filenamePattern": "basic"
+        "videoQuality": "720",
+        "filenamePattern": "basic",
+        "disableMetadata": True
     }
 
-    try:
-        st.write("🔄 Menghubungi Server Cobalt...")
-        response = requests.post(api_url, json=payload, headers=headers)
-        data = response.json()
-        
-        if 'url' not in data:
-            st.error(f"Gagal dapat link dari Cobalt: {data}")
-            return False
+    success = False
+    
+    for base_url in instances:
+        try:
+            st.toast(f"Menghubungi server: {base_url}...")
             
-        direct_link = data['url']
-        
-        # 2. Download File dari Link Cobalt
-        st.write("⬇️ Sedang mendownload file video...")
-        with requests.get(direct_link, stream=True) as r:
-            r.raise_for_status()
-            with open(output_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    
-        return True
+            # Request POST ke API
+            response = requests.post(
+                f"{base_url.rstrip('/')}", 
+                json=payload, 
+                headers=headers,
+                timeout=20
+            )
+            
+            if response.status_code != 200:
+                continue # Pindah ke server berikutnya jika error
+                
+            data = response.json()
+            download_link = None
+            
+            # Cek respon v10 (bisa 'url' langsung atau 'picker')
+            if 'url' in data:
+                download_link = data['url']
+            elif 'picker' in data and len(data['picker']) > 0:
+                download_link = data['picker'][0]['url']
+            
+            if not download_link:
+                continue
 
-    except Exception as e:
-        st.error(f"Error Cobalt: {e}")
-        return False
+            # Download File Video
+            st.info(f"⬇️ Mendownload dari {base_url}...")
+            with requests.get(download_link, stream=True) as r:
+                r.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            success = True
+            break # Stop loop jika berhasil
+
+        except Exception as e:
+            print(f"Gagal di {base_url}: {e}")
+            continue
+
+    return success
 
 # ==========================================
-# FUNGSI PROCESSSING
+# FUNGSI PROCESSING
 # ==========================================
 
 @st.cache_resource
@@ -127,27 +157,40 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    # Center Crop
+    # --- CENTER CROP (NO MEDIAPIPE) ---
     w, h = clip.size
     target_ratio = 9/16
-    if w / h > target_ratio:
+    
+    if w / h > target_ratio: # Landscape to Portrait
         new_w = h * target_ratio
         x1 = (w - new_w) // 2
         crop_clip = clip.crop(x1=x1, y1=0, width=new_w, height=h)
     else:
         crop_clip = clip
 
+    # Resize ke 720x1280
     final_clip = crop_clip.resize(height=1280) 
     
+    # --- SUBTITLES ---
     subs = []
     if enable_subs:
+        # Filter kata di range waktu ini
         valid_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
+        
         for w in valid_words:
+            # Ambil teks (fallback key 'text' atau 'word')
             text = w.get('word', w.get('text', '')).strip().upper()
             if not text: continue
+            
+            # Logika Warna
             color = 'white' if len(text) <= 3 else '#FFD700'
             
-            img_array = create_text_image(text, final_clip.w, final_clip.h, font_size=70, color=color, stroke_width=4)
+            # Buat Gambar Teks
+            img_array = create_text_image(
+                text, final_clip.w, final_clip.h, 
+                font_size=70, color=color, stroke_width=4
+            )
+            
             if img_array is not None:
                 txt_clip = (ImageClip(img_array)
                             .set_start(w['start'] - start)
@@ -156,19 +199,23 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
                             .set_position('center'))
                 subs.append(txt_clip)
             
+    # Render Akhir
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
+    
+    # Preset ultrafast penting untuk Cloud gratisan
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
+    
     full_clip.close()
     final.close()
     return out_path
 
 # ==========================================
-# UI FRONTEND
+# INTERFACE
 # ==========================================
 
-st.title("🚀 Auto Shorts (Cobalt Engine)")
-st.caption("Bypass Error 403 menggunakan Cobalt API (Tanpa yt-dlp langsung).")
+st.title("🚀 Auto Shorts (Cobalt Fixed)")
+st.caption("Download YouTube tanpa Error 403 menggunakan Cobalt API v10.")
 
 with st.sidebar:
     st.header("⚙️ Konfigurasi")
@@ -186,22 +233,24 @@ if btn_process:
         ph = st.empty()
         bar = st.progress(0)
         
-        ph.info("📥 Meminta video via Cobalt...")
+        # 1. DOWNLOAD VIA COBALT
+        ph.info("🔄 Menghubungi Server Cobalt...")
         
-        # PANGGIL FUNGSI COBALT
         if download_via_cobalt(url):
             bar.progress(20)
             source_file = f"{TEMP_DIR}/source.mp4"
             
             all_words = []
             if use_subtitle:
-                ph.info("🎤 Transkripsi Audio...")
+                ph.info("🎤 Transkripsi Audio (Whisper)...")
                 try:
                     model = load_whisper_model()
                     temp_audio = f"{TEMP_DIR}/audio.wav"
                     vc = VideoFileClip(source_file)
                     vc.audio.write_audiofile(temp_audio, logger=None)
                     vc.close()
+                    
+                    # Transkripsi
                     result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
                     all_words = [w for s in result['segments'] for w in s['words']]
                 except Exception as e:
@@ -210,6 +259,7 @@ if btn_process:
             
             bar.progress(50)
             
+            # 2. GENERATE & PROCESS
             clip_temp = VideoFileClip(source_file)
             intervals = generate_intervals(clip_temp.duration, num_clips, duration)
             clip_temp.close()
@@ -218,15 +268,23 @@ if btn_process:
             for i, data in enumerate(intervals):
                 ph.info(f"🎬 Rendering Klip {i+1}...")
                 try:
-                    out_file = process_video_clip(source_file, data['start'], data['end'], f"Short_{i+1}", all_words, use_subtitle)
+                    out_file = process_video_clip(
+                        source_file, 
+                        data['start'], 
+                        data['end'], 
+                        f"Short_{i+1}", 
+                        all_words, 
+                        use_subtitle
+                    )
                     with cols[i]:
                         st.video(out_file)
                         with open(out_file, "rb") as f:
-                            st.download_button(f"⬇️ Part {i+1}", f, file_name=f"Short_{i+1}.mp4")
+                            st.download_button(f"⬇️ Download {i+1}", f, file_name=f"Short_{i+1}.mp4")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error render: {e}")
             
             bar.progress(100)
             ph.success("✅ Selesai!")
         else:
-            st.error("Gagal Download via Cobalt. Coba URL lain atau tunggu beberapa saat.")
+            st.error("❌ Gagal Download via Cobalt. Semua server sibuk atau link tidak valid.")
+            st.info("Tips: Coba refresh halaman atau gunakan video YouTube lain.")
