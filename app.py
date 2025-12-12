@@ -18,37 +18,30 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ==========================================
-# FUNGSI TEXT ENGINE (PILLOW - CLOUD SAFE)
+# FUNGSI TEXT ENGINE (PILLOW)
 # ==========================================
 def create_text_image(text, video_width, video_height, font_size=80, color='yellow', stroke_width=4):
-    # Buat kanvas transparan
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # Load Font Default (Aman untuk Server Linux/Cloud)
     font = None
     try:
-        # Coba font default sistem linux
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
         try:
-            # Fallback ke default PIL
             font = ImageFont.load_default()
         except:
             return None
 
-    # Hitung posisi tengah (FIXED TYPO HERE)
     try:
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
         text_w = bbox[2] - bbox[0]
     except AttributeError:
-        # Fallback untuk versi Pillow lama yang belum ada textbbox
         text_w = draw.textlength(text, font=font)
     
     x_pos = (video_width - text_w) // 2
-    y_pos = int(video_height * 0.70) # Posisi subtitle agak bawah
+    y_pos = int(video_height * 0.70)
 
-    # Gambar teks dengan outline
     draw.text((x_pos, y_pos), text, font=font, fill=color, 
               stroke_width=stroke_width, stroke_fill='black')
     
@@ -60,20 +53,28 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
 
 @st.cache_resource
 def load_whisper_model():
-    # Gunakan CPU di Streamlit Cloud (Gratis)
-    device = "cpu"
-    return whisper.load_model("base", device=device)
+    return whisper.load_model("base", device="cpu")
 
-def download_video(url):
+def download_video(url, cookie_path=None):
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
+    # User Agent Browser Asli (Penting untuk anti-blokir)
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
     ydl_opts = {
         'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
         'outtmpl': f"{TEMP_DIR}/raw_video",
         'merge_output_format': 'mp4',
-        'quiet': True
+        'quiet': True,
+        'user_agent': user_agent,
+        'nocheckcertificate': True,
     }
+    
+    # Gunakan Cookies jika user menguploadnya
+    if cookie_path:
+        ydl_opts['cookiefile'] = cookie_path
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -88,7 +89,8 @@ def download_video(url):
                 if files: os.replace(files[0], output_path)
         return True
     except Exception as e:
-        st.error(f"Error Download: {e}")
+        st.error(f"Error Download (403): {e}")
+        st.warning("⚠️ YouTube memblokir IP Cloud. Solusi: Upload file 'cookies.txt' di sidebar sebelah kiri.")
         return False
 
 def generate_intervals(duration, num_clips, clip_len):
@@ -162,7 +164,6 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     final = CompositeVideoClip([final_clip] + subs)
     out_path = f"{OUT_DIR}/{name}.mp4"
     
-    # Preset ultrafast agar deploy tidak timeout
     final.write_videofile(out_path, codec='libx264', audio_codec='aac', fps=24, preset='ultrafast', logger=None)
     
     full_clip.close()
@@ -174,12 +175,26 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # ==========================================
 
 st.title("⚡ Auto Shorts (Cloud Edition)")
-st.caption("Versi Ringan: Tanpa MediaPipe, Tanpa ImageMagick, Support Python 3.13.")
+st.caption("Solusi Error 403: Gunakan Cookies Upload.")
 
 with st.sidebar:
     st.header("⚙️ Konfigurasi")
     url = st.text_input("URL YouTube")
-    num_clips = st.slider("Jumlah Klip", 1, 3, 1) # Limit 3 agar memory aman
+    
+    st.divider()
+    st.markdown("### 🍪 Anti-Blokir (Wajib di Cloud)")
+    st.info("Jika error 403, upload `cookies.txt` dari ekstensi browser 'Get cookies.txt LOCALLY'.")
+    uploaded_cookie = st.file_uploader("Upload cookies.txt", type=["txt"])
+    
+    cookie_path = None
+    if uploaded_cookie is not None:
+        cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
+        with open(cookie_path, "wb") as f:
+            f.write(uploaded_cookie.getbuffer())
+        st.success("Cookies dimuat!")
+
+    st.divider()
+    num_clips = st.slider("Jumlah Klip", 1, 3, 1)
     duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
@@ -194,7 +209,9 @@ if st.session_state.get('processing'):
     bar = st.progress(0)
     
     ph.info("📥 Mendownload video...")
-    if download_video(url):
+    
+    # Panggil fungsi download dengan path cookie
+    if download_video(url, cookie_path):
         bar.progress(20)
         source_file = f"{TEMP_DIR}/source.mp4"
         
