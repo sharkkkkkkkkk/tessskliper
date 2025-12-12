@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # KONFIGURASI
 # ==========================================
-st.set_page_config(page_title="Auto Shorts Cloud", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Auto Shorts Pro", page_icon="⚡", layout="wide")
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
@@ -53,25 +53,22 @@ def create_text_image(text, video_width, video_height, font_size=80, color='yell
 
 @st.cache_resource
 def load_whisper_model():
+    # Gunakan CPU di Streamlit Cloud
     return whisper.load_model("base", device="cpu")
 
 def download_video(url, cookie_path=None):
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path): os.remove(output_path)
     
-    # User Agent Browser Asli (Penting untuk anti-blokir)
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
+    # Opsi download yang lebih agresif menyamar sebagai Android
     ydl_opts = {
         'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
         'outtmpl': f"{TEMP_DIR}/raw_video",
         'merge_output_format': 'mp4',
         'quiet': True,
-        'user_agent': user_agent,
-        'nocheckcertificate': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}, # Menyamar jadi HP
     }
     
-    # Gunakan Cookies jika user menguploadnya
     if cookie_path:
         ydl_opts['cookiefile'] = cookie_path
     
@@ -89,14 +86,13 @@ def download_video(url, cookie_path=None):
                 if files: os.replace(files[0], output_path)
         return True
     except Exception as e:
-        st.error(f"Error Download (403): {e}")
-        st.warning("⚠️ YouTube memblokir IP Cloud. Solusi: Upload file 'cookies.txt' di sidebar sebelah kiri.")
+        st.error(f"Gagal Download dari YouTube: {e}")
         return False
 
 def generate_intervals(duration, num_clips, clip_len):
     intervals = []
-    start_safe = duration * 0.10
-    end_safe = duration * 0.90
+    start_safe = duration * 0.05 # Hanya skip 5% awal
+    end_safe = duration * 0.95
     playable = end_safe - start_safe
     
     if playable < clip_len:
@@ -117,7 +113,7 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     if end > full_clip.duration: end = full_clip.duration
     clip = full_clip.subclip(start, end)
     
-    # --- CENTER CROP LOGIC ---
+    # --- CENTER CROP (NO MEDIAPIPE) ---
     w, h = clip.size
     target_ratio = 9/16
     
@@ -128,7 +124,7 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
     else:
         crop_clip = clip
 
-    # Resize ke HD Vertikal
+    # Resize ke 720x1280 (Cukup untuk TikTok & Ringan)
     final_clip = crop_clip.resize(height=1280) 
     
     # --- SUBTITLES ---
@@ -174,74 +170,101 @@ def process_video_clip(source, start, end, name, all_words, enable_subs):
 # UI FRONTEND
 # ==========================================
 
-st.title("⚡ Auto Shorts (Cloud Edition)")
-st.caption("Solusi Error 403: Gunakan Cookies Upload.")
+st.title("⚡ Auto Shorts (Anti-Error Edition)")
+st.caption("Solusi Pasti: Upload video manual jika download error.")
 
 with st.sidebar:
-    st.header("⚙️ Konfigurasi")
-    url = st.text_input("URL YouTube")
+    st.header("1. Sumber Video")
+    # Pilihan Metode Input
+    input_method = st.radio("Pilih Cara Input:", ["Upload Video (Pasti Berhasil)", "Link YouTube (Sering Error 403)"])
     
-    st.divider()
-    st.markdown("### 🍪 Anti-Blokir (Wajib di Cloud)")
-    st.info("Jika error 403, upload `cookies.txt` dari ekstensi browser 'Get cookies.txt LOCALLY'.")
-    uploaded_cookie = st.file_uploader("Upload cookies.txt", type=["txt"])
-    
+    file_upload = None
+    url_input = None
     cookie_path = None
-    if uploaded_cookie is not None:
-        cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
-        with open(cookie_path, "wb") as f:
-            f.write(uploaded_cookie.getbuffer())
-        st.success("Cookies dimuat!")
+    
+    if input_method == "Upload Video (Pasti Berhasil)":
+        file_upload = st.file_uploader("Upload file .mp4", type=["mp4", "mov", "mkv"])
+    else:
+        url_input = st.text_input("URL YouTube")
+        st.info("Upload cookies.txt jika 403 Forbidden:")
+        uploaded_cookie = st.file_uploader("Upload cookies.txt", type=["txt"])
+        if uploaded_cookie:
+            cookie_path = os.path.join(TEMP_DIR, "cookies.txt")
+            with open(cookie_path, "wb") as f:
+                f.write(uploaded_cookie.getbuffer())
 
     st.divider()
+    st.header("2. Pengaturan")
     num_clips = st.slider("Jumlah Klip", 1, 3, 1)
     duration = st.slider("Durasi (detik)", 15, 60, 30)
     use_subtitle = st.checkbox("Subtitle", value=True)
     
-    if st.button("🚀 Proses"):
-        if url:
-            st.session_state['processing'] = True
-        else:
-            st.error("Masukkan URL!")
+    btn_process = st.button("🚀 Mulai Proses", type="primary")
 
-if st.session_state.get('processing'):
-    ph = st.empty()
-    bar = st.progress(0)
+# LOGIKA PROSES UTAMA
+if btn_process:
+    processing_ok = False
     
-    ph.info("📥 Mendownload video...")
+    # STEP 1: SIAPKAN VIDEO SUMBER
+    source_file = f"{TEMP_DIR}/source.mp4"
     
-    # Panggil fungsi download dengan path cookie
-    if download_video(url, cookie_path):
-        bar.progress(20)
-        source_file = f"{TEMP_DIR}/source.mp4"
+    if input_method == "Upload Video (Pasti Berhasil)":
+        if file_upload is not None:
+            with st.spinner("Menyimpan video yang diupload..."):
+                with open(source_file, "wb") as f:
+                    f.write(file_upload.getbuffer())
+            processing_ok = True
+        else:
+            st.error("Mohon upload file video terlebih dahulu.")
+            
+    else: # Metode YouTube
+        if url_input:
+            with st.spinner("Mencoba download dari YouTube..."):
+                if download_video(url_input, cookie_path):
+                    processing_ok = True
+                else:
+                    st.error("Gagal download. YouTube memblokir IP Cloud ini. Silakan gunakan opsi 'Upload Video' di atas.")
+        else:
+            st.error("Mohon masukkan URL.")
+
+    # STEP 2: PROSES JIKA VIDEO ADA
+    if processing_ok:
+        bar = st.progress(0)
+        st.info("Video siap! Memulai pemrosesan...")
         
+        # Transkripsi
         all_words = []
         if use_subtitle:
-            ph.info("🎤 Transkripsi Audio (Whisper CPU)...")
+            st.warning("⏳ Sedang mentranskrip audio (Whisper)... Ini memakan waktu karena menggunakan CPU.")
             try:
                 model = load_whisper_model()
                 temp_audio = f"{TEMP_DIR}/audio.wav"
+                
+                # Ekstrak audio
                 vc = VideoFileClip(source_file)
                 vc.audio.write_audiofile(temp_audio, logger=None)
                 vc.close()
                 
+                # Transcribe
                 result = model.transcribe(temp_audio, word_timestamps=True, fp16=False)
                 all_words = [w for s in result['segments'] for w in s['words']]
             except Exception as e:
-                st.warning(f"Gagal Transkripsi: {e}")
+                st.error(f"Gagal Transkripsi: {e}")
                 use_subtitle = False
         
-        bar.progress(50)
+        bar.progress(40)
         
-        # Proses Klip
-        source_clip = VideoFileClip(source_file)
-        intervals = generate_intervals(source_clip.duration, num_clips, duration)
-        source_clip.close()
+        # Potong & Edit
+        clip_temp = VideoFileClip(source_file)
+        total_dur = clip_temp.duration
+        clip_temp.close()
+        
+        intervals = generate_intervals(total_dur, num_clips, duration)
         
         cols = st.columns(len(intervals))
         
         for i, data in enumerate(intervals):
-            ph.info(f"🎬 Rendering Klip {i+1}...")
+            st.write(f"🎬 Sedang merender Klip {i+1}...")
             try:
                 out_file = process_video_clip(
                     source_file, 
@@ -254,10 +277,14 @@ if st.session_state.get('processing'):
                 with cols[i]:
                     st.video(out_file)
                     with open(out_file, "rb") as f:
-                        st.download_button(f"⬇️ Download {i+1}", f, file_name=f"Short_{i+1}.mp4")
+                        st.download_button(
+                            label=f"⬇️ Download {i+1}",
+                            data=f,
+                            file_name=f"Short_{i+1}.mp4",
+                            mime="video/mp4"
+                        )
             except Exception as e:
-                st.error(f"Gagal Klip {i+1}: {e}")
-        
+                st.error(f"Error render: {e}")
+                
         bar.progress(100)
-        ph.success("✅ Selesai!")
-        st.session_state['processing'] = False
+        st.success("✅ Selesai!")
