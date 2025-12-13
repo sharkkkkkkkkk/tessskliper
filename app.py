@@ -114,89 +114,70 @@ def download_with_rapidapi(youtube_url, quality="720"):
         download_url = None
         selected_quality = None
         
-        # Check if videos array exists
-        if 'videos' in data and data['videos']:
-            videos = data['videos']
+        # Check response structure
+        if 'videos' in data and isinstance(data['videos'], dict):
+            videos_data = data['videos']
             
-            # Handle if videos is a list of objects or dict
-            if isinstance(videos, dict):
-                # If videos is a dict with quality keys
-                st.info(f"📹 Found {len(videos)} video formats (dict)")
+            # Check if API call was successful
+            if videos_data.get('errorId') == 'Success' and 'items' in videos_data:
+                items = videos_data['items']
                 
-                # Try to find exact quality match
-                if target_quality in videos:
-                    video_data = videos[target_quality]
-                    if isinstance(video_data, dict) and 'url' in video_data:
-                        download_url = video_data['url']
-                        selected_quality = target_quality
-                    elif isinstance(video_data, str):
-                        download_url = video_data
-                        selected_quality = target_quality
+                st.info(f"📹 Found {len(items)} video formats")
                 
-                # If no exact match, try closest quality
-                if not download_url:
-                    quality_order = ["1080p", "720p", "480p", "360p", "240p", "144p"]
-                    for q in quality_order:
-                        if q in videos:
-                            video_data = videos[q]
-                            if isinstance(video_data, dict) and 'url' in video_data:
-                                download_url = video_data['url']
-                                selected_quality = q
-                                break
-                            elif isinstance(video_data, str):
-                                download_url = video_data
-                                selected_quality = q
-                                break
+                # Filter only videos with audio (untuk dapat full video)
+                videos_with_audio = [v for v in items if v.get('hasAudio') == True]
                 
-                # Last resort: take first available
-                if not download_url:
-                    for quality_key, video_data in videos.items():
-                        if isinstance(video_data, dict) and 'url' in video_data:
-                            download_url = video_data['url']
-                            selected_quality = quality_key
-                            break
-                        elif isinstance(video_data, str):
-                            download_url = video_data
-                            selected_quality = quality_key
-                            break
-            
-            elif isinstance(videos, list):
-                # If videos is a list of objects
-                st.info(f"📹 Found {len(videos)} video formats (list)")
-                
-                # Try to find exact quality match
-                for video in videos:
-                    if isinstance(video, dict):
-                        if video.get('quality') == target_quality and video.get('url'):
-                            download_url = video['url']
-                            selected_quality = video['quality']
-                            break
-                
-                # If no exact match, get closest quality
-                if not download_url:
-                    quality_order = ["1080p", "720p", "480p", "360p", "240p", "144p"]
+                if videos_with_audio:
+                    st.success(f"✅ Found {len(videos_with_audio)} formats with audio")
                     
-                    for q in quality_order:
-                        for video in videos:
-                            if isinstance(video, dict) and video.get('quality') == q and video.get('url'):
-                                download_url = video['url']
-                                selected_quality = video['quality']
+                    # Try to find exact quality match
+                    for video in videos_with_audio:
+                        if video.get('quality') == target_quality:
+                            download_url = video.get('url')
+                            selected_quality = video.get('quality')
+                            break
+                    
+                    # If no exact match, find closest quality
+                    if not download_url:
+                        quality_order = ["1080p", "720p", "480p", "360p", "240p", "144p"]
+                        target_idx = quality_order.index(target_quality) if target_quality in quality_order else 1
+                        
+                        # Try same or lower quality first
+                        for q in quality_order[target_idx:]:
+                            for video in videos_with_audio:
+                                if video.get('quality') == q:
+                                    download_url = video.get('url')
+                                    selected_quality = video.get('quality')
+                                    break
+                            if download_url:
                                 break
-                        if download_url:
-                            break
+                        
+                        # If still not found, try higher quality
+                        if not download_url:
+                            for q in quality_order[:target_idx]:
+                                for video in videos_with_audio:
+                                    if video.get('quality') == q:
+                                        download_url = video.get('url')
+                                        selected_quality = video.get('quality')
+                                        break
+                                if download_url:
+                                    break
+                    
+                    # Last resort: take first video with audio
+                    if not download_url and videos_with_audio:
+                        download_url = videos_with_audio[0].get('url')
+                        selected_quality = videos_with_audio[0].get('quality', 'unknown')
                 
-                # Last resort: take first available
-                if not download_url:
-                    for video in videos:
-                        if isinstance(video, dict) and video.get('url'):
-                            download_url = video['url']
-                            selected_quality = video.get('quality', 'unknown')
-                            break
-        
-        elif 'url' in data:
-            # Direct URL in response
-            download_url = data['url']
-            selected_quality = data.get('quality', 'auto')
+                else:
+                    # No video with audio, take first available
+                    st.warning("⚠️ No video with audio found, using first available format")
+                    if items:
+                        download_url = items[0].get('url')
+                        selected_quality = items[0].get('quality', 'unknown')
+            
+            elif videos_data.get('errorId') != 'Success':
+                st.error(f"❌ API Error: {videos_data.get('errorId')}")
+                return False
         
         if not download_url:
             st.error("❌ Tidak dapat menemukan download URL dalam response")
