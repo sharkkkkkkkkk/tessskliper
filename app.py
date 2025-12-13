@@ -282,13 +282,67 @@ def download_with_rapidapi(youtube_url, quality="720"):
             return False
         
         st.success(f"✅ Found video: **{selected_quality}**")
+        st.info(f"📦 Size: {videos_with_audio[0].get('sizeText', 'unknown')}")
         
-        # Google URLs are protected and may return 403
-        # We'll use yt-dlp instead for more reliable download
-        st.warning("⚠️ Google video URLs are protected. Switching to yt-dlp method...")
+        # Step 2: Download video langsung dari URL
+        st.info(f"📥 Downloading video...")
         
-        # Extract video ID from original URL for yt-dlp
-        return download_with_ytdlp(youtube_url, quality)
+        import urllib.request
+        
+        try:
+            # Use urllib instead of requests for better streaming
+            req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            
+            with urllib.request.urlopen(req, timeout=600) as response:
+                total_size = int(response.headers.get('Content-Length', 0))
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                downloaded = 0
+                chunk_size = 8192
+                
+                with open(output_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size > 0:
+                            progress = downloaded / total_size
+                            progress_bar.progress(min(progress, 1.0))
+                            status_text.text(
+                                f"📥 {downloaded/(1024*1024):.1f} MB / "
+                                f"{total_size/(1024*1024):.1f} MB "
+                                f"({progress*100:.1f}%)"
+                            )
+                        else:
+                            status_text.text(f"📥 {downloaded/(1024*1024):.1f} MB downloaded...")
+            
+            progress_bar.progress(1.0)
+            status_text.empty()
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                file_size = os.path.getsize(output_path) / (1024 * 1024)
+                st.success(f"✅ Download berhasil! ({file_size:.1f} MB)")
+                return True
+            else:
+                st.error("❌ File tidak ditemukan atau kosong setelah download")
+                return False
+                
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                st.warning("⚠️ Direct download blocked (403). Switching to yt-dlp...")
+                return download_with_ytdlp(youtube_url, quality)
+            else:
+                st.error(f"❌ HTTP Error {e.code}: {e.reason}")
+                return False
+        except urllib.error.URLError as e:
+            st.error(f"❌ URL Error: {e.reason}")
+            return False
             
     except json.JSONDecodeError as e:
         st.error(f"❌ JSON parsing error: {str(e)[:200]}")
