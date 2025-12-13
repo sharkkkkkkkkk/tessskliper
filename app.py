@@ -3,24 +3,25 @@ import os
 import subprocess
 import yt_dlp
 import shutil
+import time
 
 # ==========================================
-# KONFIGURASI
+# KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="Auto Shorts (Cookie Mode)", page_icon="🍪", layout="centered")
+st.set_page_config(page_title="Auto Shorts (Final Fix)", page_icon="✂️", layout="centered")
 
 TEMP_DIR = "temp_video"
 OUT_DIR = "output_shorts"
 COOKIE_FILE = "cookies.txt"
 
-# Bersihkan folder
+# Bersihkan folder saat restart untuk hemat storage
 if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)
 if os.path.exists(OUT_DIR): shutil.rmtree(OUT_DIR)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ==========================================
-# 1. CEK FFMPEG
+# 1. CEK FFMPEG (WAJIB ADA packages.txt)
 # ==========================================
 def check_ffmpeg():
     try:
@@ -30,44 +31,62 @@ def check_ffmpeg():
         return False
 
 # ==========================================
-# 2. DOWNLOADER DENGAN COOKIES
+# 2. DOWNLOADER (LOGIKA BARU)
 # ==========================================
-def download_video_cookies(url, cookie_path=None):
+def download_video_final(url, cookie_path=None):
     output_filename = "source.mp4"
     output_path = os.path.join(TEMP_DIR, output_filename)
     
-    # Opsi yt-dlp
+    # Hapus file lama
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    # KONFIGURASI YT-DLP (Disesuaikan untuk Cloud Gratisan)
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        # PENTING: Jangan 'bestvideo+bestaudio'. Itu butuh merge & RAM besar.
+        # Pilih 'best[ext=mp4]' untuk ambil file jadi (biasanya 720p/360p) yang ringan.
+        'format': 'best[ext=mp4]/best',
+        
         'outtmpl': output_path,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False, 
+        'no_warnings': False,
         'geo_bypass': True,
-        # User agent agar terlihat seperti browser biasa
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        
+        # MENYAMAR JADI BROWSER (Agar tidak diblokir jadi 0 bytes)
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+        'nocheckcertificate': True,
     }
 
-    # Jika user upload cookies, gunakan!
+    # Jika user upload cookies
     if cookie_path:
         ydl_opts['cookiefile'] = cookie_path
 
     try:
-        with st.status("📥 Sedang mendownload (Bypass 403)...", expanded=True) as status:
+        with st.status("📥 Sedang mendownload (Mode Stabil)...", expanded=True) as status:
             if cookie_path:
-                st.write("🍪 Menggunakan Cookies User...")
+                st.write("🍪 Menggunakan Cookies...")
+            else:
+                st.write("🕵️ Menggunakan User Agent Samaran...")
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-                
-            status.update(label="✅ Download Selesai!", state="complete", expanded=False)
             
-        return True, output_path
+            # VERIFIKASI FILE
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                if file_size > 1024: # Lebih dari 1KB
+                    status.update(label=f"✅ Selesai! Ukuran: {file_size/1024/1024:.2f} MB", state="complete", expanded=False)
+                    return True, output_path
+                else:
+                    return False, "File kosong (0 bytes). Terblokir YouTube."
+            else:
+                return False, "File tidak ditemukan setelah download."
 
     except Exception as e:
         return False, str(e)
 
 # ==========================================
-# 3. PROCESSING (FFMPEG)
+# 3. PROCESSING (FFMPEG - ULTRAFAST)
 # ==========================================
 def get_video_duration(input_path):
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_path]
@@ -82,8 +101,10 @@ def process_clips(input_path, num_clips, clip_duration):
     if total_duration == 0: return []
 
     generated_files = []
-    start_buffer = total_duration * 0.1
-    end_buffer = total_duration * 0.9
+    
+    # Ambil tengah-tengah video (Safe Zone)
+    start_buffer = total_duration * 0.15 # Skip 15% awal
+    end_buffer = total_duration * 0.85   # Skip 15% akhir
     playable_area = end_buffer - start_buffer
     
     if playable_area < clip_duration:
@@ -99,15 +120,16 @@ def process_clips(input_path, num_clips, clip_duration):
         output_name = f"Short_Clip_{i+1}.mp4"
         output_file = os.path.join(OUT_DIR, output_name)
         
-        # Crop 9:16 Center
-        filter_complex = "crop=ih*(9/16):ih:(iw-ow)/2:0,scale=1080:1920"
+        # Filter: Crop Tengah + Scale 720p (Lebih Ringan dari 1080p)
+        # Scale 720:1280 sudah cukup bagus untuk HP dan jauh lebih cepat di Cloud
+        filter_complex = "crop=ih*(9/16):ih:(iw-ow)/2:0,scale=720:1280"
         
         cmd = [
             'ffmpeg', '-y', 
             '-ss', str(start_time), '-t', str(clip_duration),
             '-i', input_path, '-vf', filter_complex,
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-            '-c:a', 'aac', '-b:a', '128k', output_file
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', # Settingan Tercepat
+            '-c:a', 'aac', '-b:a', '64k', output_file
         ]
         
         subprocess.run(cmd, capture_output=True)
@@ -119,58 +141,60 @@ def process_clips(input_path, num_clips, clip_duration):
 # ==========================================
 # UI APLIKASI
 # ==========================================
-st.title("🍪 Auto Shorts (Bypass 403)")
-st.caption("Gunakan Cookies untuk melewati blokir YouTube di Cloud.")
+st.title("✂️ Auto Shorts (Versi Stabil)")
+st.caption("Solusi 'File Empty' & 'Timeout' di Streamlit Cloud")
 
+# Cek Sistem
 if not check_ffmpeg():
-    st.error("❌ FFmpeg belum terinstall. Pastikan file 'packages.txt' ada di GitHub.")
+    st.error("❌ FFmpeg Tidak Ditemukan!")
+    st.warning("⚠️ Wajib buat file `packages.txt` isi `ffmpeg` di GitHub.")
     st.stop()
 
-# 1. INPUT COOKIES
-with st.expander("🔑 Langkah 1: Upload Cookies (Wajib jika Error 403)", expanded=True):
-    st.info("Download ekstensi 'Get cookies.txt LOCALLY' di Chrome, export file, lalu upload di sini.")
-    uploaded_cookie = st.file_uploader("Upload file cookies.txt", type=["txt"])
-    
+# 1. Upload Cookies
+with st.expander("🍪 Upload Cookies (Disarankan)", expanded=True):
+    st.info("Upload `cookies.txt` jika download gagal terus.")
+    uploaded_cookie = st.file_uploader("Pilih file cookies.txt", type=["txt"])
     cookie_path = None
+    
     if uploaded_cookie:
         with open(COOKIE_FILE, "wb") as f:
             f.write(uploaded_cookie.getbuffer())
         cookie_path = COOKIE_FILE
-        st.success("✅ Cookies siap digunakan!")
+        st.success("✅ Cookies terpasang!")
 
-# 2. INPUT URL & SETTING
+# 2. Input
 st.divider()
 url_input = st.text_input("🔗 URL YouTube", placeholder="https://youtube.com/watch?v=...")
-col1, col2 = st.columns(2)
-with col1: num_clips = st.slider("Jumlah Klip", 1, 5, 2)
-with col2: duration = st.slider("Durasi (detik)", 15, 60, 30)
 
-# 3. TOMBOL PROSES
+col1, col2 = st.columns(2)
+with col1: num_clips = st.slider("Jumlah Klip", 1, 3, 1) # Default 1 agar cepat
+with col2: duration = st.slider("Durasi (detik)", 15, 60, 20)
+
+# 3. Eksekusi
 if st.button("🚀 PROSES VIDEO", type="primary", use_container_width=True):
     if url_input:
-        # Panggil fungsi download dengan path cookies
-        success, result = download_video_cookies(url_input, cookie_path)
+        success, result = download_video_final(url_input, cookie_path)
         
         if success:
             source_path = result
-            st.success("✅ Video berhasil didownload!")
+            st.success("✅ Download Berhasil! Memulai pemotongan...")
             
-            with st.spinner("⚙️ Memotong video..."):
+            with st.spinner("⚙️ Memotong (Tunggu 1-2 menit)..."):
                 clips = process_clips(source_path, num_clips, duration)
             
             if clips:
                 st.divider()
+                st.subheader("🎉 Hasil Video")
                 cols = st.columns(len(clips))
                 for idx, clip_path in enumerate(clips):
                     with cols[idx % 3]: 
                         st.video(clip_path)
                         with open(clip_path, "rb") as file:
-                            st.download_button(f"⬇️ Unduh {idx+1}", file, os.path.basename(clip_path), "video/mp4")
+                            st.download_button(f"⬇️ Unduh Klip {idx+1}", file, os.path.basename(clip_path), "video/mp4")
             else:
-                st.error("Gagal clipping.")
+                st.error("Gagal membuat klip.")
         else:
             st.error(f"Gagal: {result}")
-            if "403" in str(result) or "Sign in" in str(result):
-                st.warning("⚠️ Masih Error 403? Pastikan file cookies.txt yang Anda upload masih baru (Fresh).")
+            st.warning("Tips: Coba update `cookies.txt` baru dari Mode Incognito.")
     else:
-        st.warning("Masukkan URL dulu.")
+        st.warning("Masukkan Link YouTube dulu.")
