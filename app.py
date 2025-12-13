@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import subprocess
 import json
-import requests
+import http.client
 import re
 
 # ==========================================
@@ -163,13 +163,8 @@ def download_with_rapidapi(youtube_url, quality="720"):
         
         st.info(f"🎯 Video ID: `{video_id}`")
         
-        # Step 1: Get video details & download links
+        # Step 1: Get video details & download links using http.client
         st.info("📡 Fetching video details from RapidAPI...")
-        
-        headers = {
-            "x-rapidapi-key": RAPIDAPI_KEY,
-            "x-rapidapi-host": RAPIDAPI_HOST
-        }
         
         # Quality mapping
         quality_map = {
@@ -181,21 +176,32 @@ def download_with_rapidapi(youtube_url, quality="720"):
         
         target_quality = quality_map.get(quality, "720p")
         
-        params = {
-            "videoId": video_id,
-            "urlAccess": "normal",
-            "videos": "auto",
-            "audios": "auto"
+        # Create connection
+        conn = http.client.HTTPSConnection("youtube-media-downloader.p.rapidapi.com")
+        
+        headers = {
+            'x-rapidapi-key': RAPIDAPI_KEY,
+            'x-rapidapi-host': RAPIDAPI_HOST
         }
         
-        response = requests.get(RAPIDAPI_URL, headers=headers, params=params, timeout=30)
+        # Build query string
+        query_params = f"/v2/video/details?videoId={video_id}&urlAccess=normal&videos=auto&audios=auto"
         
-        if response.status_code != 200:
-            st.error(f"❌ API Error: Status {response.status_code}")
-            st.error(f"Response: {response.text[:500]}")
+        # Make request
+        conn.request("GET", query_params, headers=headers)
+        
+        res = conn.getresponse()
+        data_bytes = res.read()
+        
+        if res.status != 200:
+            st.error(f"❌ API Error: Status {res.status}")
+            st.error(f"Response: {data_bytes.decode('utf-8')[:500]}")
+            conn.close()
             return False
         
-        data = response.json()
+        # Parse JSON response
+        data = json.loads(data_bytes.decode('utf-8'))
+        conn.close()
         
         # Debug: Show API response structure
         with st.expander("🔍 Debug: API Response"):
@@ -275,7 +281,7 @@ def download_with_rapidapi(youtube_url, quality="720"):
             st.info("💡 Cek struktur response di Debug section di atas")
             return False
         
-        st.success(f"✅ Found video: **{selected_quality}** ({videos_with_audio[0].get('sizeText', 'unknown size')})")
+        st.success(f"✅ Found video: **{selected_quality}**")
         
         # Google URLs are protected and may return 403
         # We'll use yt-dlp instead for more reliable download
@@ -284,11 +290,8 @@ def download_with_rapidapi(youtube_url, quality="720"):
         # Extract video ID from original URL for yt-dlp
         return download_with_ytdlp(youtube_url, quality)
             
-    except requests.exceptions.Timeout:
-        st.error("❌ Request timeout! Video mungkin terlalu besar atau koneksi lambat.")
-        return False
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error: {str(e)[:200]}")
+    except json.JSONDecodeError as e:
+        st.error(f"❌ JSON parsing error: {str(e)[:200]}")
         return False
     except Exception as e:
         st.error(f"❌ Error: {str(e)[:200]}")
