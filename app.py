@@ -284,14 +284,27 @@ def download_with_rapidapi(youtube_url, quality="720"):
         st.success(f"✅ Found video: **{selected_quality}**")
         st.info(f"📦 Size: {videos_with_audio[0].get('sizeText', 'unknown')}")
         
-        # Step 2: Download video langsung dari URL
+        # Step 2: Download video langsung dari URL dengan proper headers
         st.info(f"📥 Downloading video...")
         
-        import urllib.request
-        
         try:
-            # Use urllib instead of requests for better streaming
-            req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            import urllib.request
+            
+            # Proper headers to mimic browser request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'identity',
+                'Range': 'bytes=0-',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+                'Sec-Fetch-Dest': 'video',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'cross-site'
+            }
+            
+            req = urllib.request.Request(download_url, headers=headers)
             
             with urllib.request.urlopen(req, timeout=600) as response:
                 total_size = int(response.headers.get('Content-Length', 0))
@@ -300,7 +313,7 @@ def download_with_rapidapi(youtube_url, quality="720"):
                 status_text = st.empty()
                 
                 downloaded = 0
-                chunk_size = 8192
+                chunk_size = 8192 * 4  # 32KB chunks for better speed
                 
                 with open(output_path, 'wb') as f:
                     while True:
@@ -314,13 +327,17 @@ def download_with_rapidapi(youtube_url, quality="720"):
                         if total_size > 0:
                             progress = downloaded / total_size
                             progress_bar.progress(min(progress, 1.0))
-                            status_text.text(
-                                f"📥 {downloaded/(1024*1024):.1f} MB / "
-                                f"{total_size/(1024*1024):.1f} MB "
-                                f"({progress*100:.1f}%)"
-                            )
+                            
+                            # Update every 1MB to reduce UI updates
+                            if downloaded % (1024 * 1024) < chunk_size:
+                                status_text.text(
+                                    f"📥 {downloaded/(1024*1024):.1f} MB / "
+                                    f"{total_size/(1024*1024):.1f} MB "
+                                    f"({progress*100:.1f}%)"
+                                )
                         else:
-                            status_text.text(f"📥 {downloaded/(1024*1024):.1f} MB downloaded...")
+                            if downloaded % (1024 * 1024 * 5) < chunk_size:  # Update every 5MB
+                                status_text.text(f"📥 {downloaded/(1024*1024):.1f} MB downloaded...")
             
             progress_bar.progress(1.0)
             status_text.empty()
@@ -334,14 +351,23 @@ def download_with_rapidapi(youtube_url, quality="720"):
                 return False
                 
         except urllib.error.HTTPError as e:
+            st.error(f"❌ HTTP Error {e.code}: {e.reason}")
+            
             if e.code == 403:
-                st.warning("⚠️ Direct download blocked (403). Switching to yt-dlp...")
-                return download_with_ytdlp(youtube_url, quality)
-            else:
-                st.error(f"❌ HTTP Error {e.code}: {e.reason}")
-                return False
+                st.warning("⚠️ URL expired atau blocked. API URLs biasanya expire dalam beberapa jam.")
+                st.info("💡 Solusi: Fetch API lagi untuk dapat URL baru, atau gunakan yt-dlp sebagai fallback")
+            
+            return False
+            
         except urllib.error.URLError as e:
-            st.error(f"❌ URL Error: {e.reason}")
+            st.error(f"❌ URL Error: {str(e.reason)[:200]}")
+            return False
+        
+        except Exception as e:
+            st.error(f"❌ Download error: {str(e)[:200]}")
+            import traceback
+            with st.expander("🔍 Error Details"):
+                st.code(traceback.format_exc())
             return False
             
     except json.JSONDecodeError as e:
