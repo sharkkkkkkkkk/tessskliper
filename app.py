@@ -52,7 +52,98 @@ def extract_video_id(url):
     return None
 
 # ==========================================
-# RAPIDAPI DOWNLOAD FUNCTION
+# CHECK YT-DLP
+# ==========================================
+def check_ytdlp():
+    try:
+        result = subprocess.run(['yt-dlp', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except:
+        return False
+
+# ==========================================
+# DOWNLOAD WITH YT-DLP (Fallback method)
+# ==========================================
+def download_with_ytdlp(youtube_url, quality="720"):
+    """
+    Download video menggunakan yt-dlp (more reliable)
+    """
+    output_path = f"{TEMP_DIR}/source.mp4"
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    
+    try:
+        st.info("📥 Downloading with yt-dlp...")
+        
+        # Build command
+        cmd = [
+            'yt-dlp',
+            '-f', f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best',
+            '-o', output_path,
+            '--no-playlist',
+            '--no-warnings',
+            '--newline',
+            youtube_url
+        ]
+        
+        st.caption(f"Command: `{' '.join(cmd[:4])}...`")
+        
+        # Execute
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for line in process.stdout:
+            line = line.strip()
+            
+            if '[download]' in line and '%' in line:
+                try:
+                    if 'ETA' in line or 'at' in line:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if '%' in part:
+                                percent = float(part.replace('%', ''))
+                                progress_bar.progress(min(percent / 100, 1.0))
+                                
+                                # Extract size info
+                                if 'of' in line:
+                                    size_idx = parts.index('of') if 'of' in parts else -1
+                                    if size_idx > 0:
+                                        size_info = ' '.join(parts[size_idx:size_idx+2])
+                                        status_text.text(f"📥 {percent:.1f}% {size_info}")
+                                else:
+                                    status_text.text(f"📥 {percent:.1f}%")
+                                break
+                except:
+                    pass
+        
+        process.wait()
+        
+        if process.returncode == 0 and os.path.exists(output_path):
+            progress_bar.progress(1.0)
+            status_text.empty()
+            
+            file_size = os.path.getsize(output_path) / (1024 * 1024)
+            st.success(f"✅ Download berhasil! ({file_size:.1f} MB)")
+            return True
+        else:
+            st.error(f"❌ yt-dlp failed with code: {process.returncode}")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)[:200]}")
+        return False
+
+# ==========================================
+# RAPIDAPI DOWNLOAD FUNCTION (Primary method)
 # ==========================================
 def download_with_rapidapi(youtube_url, quality="720"):
     """
@@ -184,48 +275,14 @@ def download_with_rapidapi(youtube_url, quality="720"):
             st.info("💡 Cek struktur response di Debug section di atas")
             return False
         
-        st.success(f"✅ Found video: **{selected_quality}**")
+        st.success(f"✅ Found video: **{selected_quality}** ({videos_with_audio[0].get('sizeText', 'unknown size')})")
         
-        # Step 2: Download video dari URL
-        st.info(f"📥 Downloading video...")
+        # Google URLs are protected and may return 403
+        # We'll use yt-dlp instead for more reliable download
+        st.warning("⚠️ Google video URLs are protected. Switching to yt-dlp method...")
         
-        with requests.get(download_url, stream=True, timeout=600) as r:
-            r.raise_for_status()
-            
-            total_size = int(r.headers.get('content-length', 0))
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            downloaded = 0
-            
-            with open(output_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        if total_size > 0:
-                            progress = downloaded / total_size
-                            progress_bar.progress(min(progress, 1.0))
-                            status_text.text(
-                                f"📥 {downloaded/(1024*1024):.1f} MB / "
-                                f"{total_size/(1024*1024):.1f} MB "
-                                f"({progress*100:.1f}%)"
-                            )
-                        else:
-                            status_text.text(f"📥 {downloaded/(1024*1024):.1f} MB downloaded...")
-        
-        progress_bar.progress(1.0)
-        status_text.empty()
-        
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            file_size = os.path.getsize(output_path) / (1024 * 1024)
-            st.success(f"✅ Download berhasil! ({file_size:.1f} MB)")
-            return True
-        else:
-            st.error("❌ File tidak ditemukan atau kosong setelah download")
-            return False
+        # Extract video ID from original URL for yt-dlp
+        return download_with_ytdlp(youtube_url, quality)
             
     except requests.exceptions.Timeout:
         st.error("❌ Request timeout! Video mungkin terlalu besar atau koneksi lambat.")
@@ -310,12 +367,22 @@ st.success("""
 """)
 
 # Check dependencies
-if check_ffmpeg():
-    st.success("✅ FFmpeg OK")
-else:
-    st.error("❌ FFmpeg missing - Install dulu!")
-    st.code("# Ubuntu/Debian\nsudo apt install ffmpeg\n\n# MacOS\nbrew install ffmpeg", language="bash")
-    st.stop()
+col1, col2 = st.columns(2)
+
+with col1:
+    if check_ytdlp():
+        st.success("✅ yt-dlp OK")
+    else:
+        st.error("❌ yt-dlp missing")
+        st.code("pip install yt-dlp", language="bash")
+        st.stop()
+
+with col2:
+    if check_ffmpeg():
+        st.success("✅ FFmpeg OK")
+    else:
+        st.error("❌ FFmpeg missing")
+        st.stop()
 
 # ==========================================
 # SIDEBAR
