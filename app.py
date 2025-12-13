@@ -3,6 +3,7 @@ import os
 import subprocess
 import json
 import random
+import time
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
 
@@ -13,48 +14,29 @@ st.set_page_config(page_title="Auto Shorts Stealth", page_icon="🥷", layout="w
 
 TEMP_DIR = "temp"
 OUT_DIR = "output"
+COOKIES_DIR = "cookies"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(COOKIES_DIR, exist_ok=True)
 
 # ==========================================
-# USER AGENT POOL (Real Browser User Agents)
+# USER AGENT POOL
 # ==========================================
 USER_AGENTS = [
-    # Chrome on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    
-    # Chrome on macOS
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    
-    # Firefox on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
-    
-    # Safari on macOS
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    
-    # Edge on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    
-    # Chrome on Android
     "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    
-    # Safari on iOS
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPad; CPU OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 ]
 
 def get_random_user_agent():
-    """Pilih random user agent dari pool"""
     return random.choice(USER_AGENTS)
 
 def get_browser_headers(user_agent=None):
-    """Generate browser-like headers"""
     if not user_agent:
         user_agent = get_random_user_agent()
     
@@ -72,170 +54,224 @@ def get_browser_headers(user_agent=None):
         'Sec-Fetch-User': '?1',
         'Cache-Control': 'max-age=0',
     }
-    
     return headers
 
 # ==========================================
-# CUSTOM REQUESTS SESSION WITH STEALTH
+# COOKIES HANDLER
 # ==========================================
-class StealthSession:
-    """Custom session yang meniru browser asli"""
+def parse_cookies_txt(cookies_content):
+    """Parse Netscape cookies.txt format"""
+    cookies = {}
     
-    def __init__(self):
-        import requests
-        self.session = requests.Session()
-        self.user_agent = get_random_user_agent()
-        self.session.headers.update(get_browser_headers(self.user_agent))
+    for line in cookies_content.split('\n'):
+        line = line.strip()
+        
+        # Skip comments and empty lines
+        if not line or line.startswith('#'):
+            continue
+        
+        try:
+            # Netscape format: domain, flag, path, secure, expiration, name, value
+            parts = line.split('\t')
+            if len(parts) >= 7:
+                name = parts[5]
+                value = parts[6]
+                cookies[name] = value
+        except:
+            continue
     
-    def get(self, url, **kwargs):
-        """GET request dengan random delay"""
-        import time
+    return cookies
+
+def save_cookies_file(uploaded_file):
+    """Save uploaded cookies file"""
+    cookies_path = f"{COOKIES_DIR}/cookies.txt"
+    
+    try:
+        with open(cookies_path, 'wb') as f:
+            f.write(uploaded_file.getbuffer())
         
-        # Random delay (100-500ms) untuk meniru human behavior
-        time.sleep(random.uniform(0.1, 0.5))
-        
-        # Rotate user agent randomly (20% chance)
-        if random.random() < 0.2:
-            self.user_agent = get_random_user_agent()
-            self.session.headers.update(get_browser_headers(self.user_agent))
-        
-        return self.session.get(url, **kwargs)
+        # Verify cookies
+        with open(cookies_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            cookies = parse_cookies_txt(content)
+            
+            if cookies:
+                st.success(f"✅ Cookies loaded: {len(cookies)} entries")
+                return cookies_path
+            else:
+                st.error("❌ Cookies file invalid atau kosong")
+                return None
+    except Exception as e:
+        st.error(f"❌ Error loading cookies: {e}")
+        return None
 
 # ==========================================
-# PYTUBEFIX WITH STEALTH MODE
+# DOWNLOAD WITH COOKIES
 # ==========================================
-def download_stealth_mode(url, method="auto"):
+def download_with_cookies(url, cookies_path=None, method="auto", max_retries=3):
     """
-    Download dengan stealth mode:
-    - Custom user agent
-    - Browser-like headers
-    - Multiple retry dengan different UA
+    Download dengan cookies support untuk video yang butuh login
     """
     output_path = f"{TEMP_DIR}/source.mp4"
     if os.path.exists(output_path):
         os.remove(output_path)
     
-    # List of methods to try
+    # Methods to try
     methods = []
-    
     if method == "auto":
         methods = [
             ('ANDROID', 'Android Mobile'),
-            ('ANDROID_CREATOR', 'Android Creator Studio'),
-            ('ANDROID_MUSIC', 'Android Music App'),
-            ('IOS', 'iOS Safari'),
-            ('IOS_MUSIC', 'iOS Music App'),
             ('WEB', 'Desktop Browser'),
+            ('IOS', 'iOS Safari'),
+            ('ANDROID_CREATOR', 'Android Creator Studio'),
             ('WEB_CREATOR', 'Desktop Creator Studio'),
         ]
     else:
         methods = [(method, method)]
     
     last_error = None
+    attempt_count = 0
     
     for client_type, client_name in methods:
-        try:
-            user_agent = get_random_user_agent()
+        for retry in range(max_retries):
+            attempt_count += 1
             
-            st.write(f"🔄 Mencoba: **{client_name}**")
-            st.caption(f"User-Agent: `{user_agent[:50]}...`")
-            
-            # Create custom session
-            import requests
-            session = requests.Session()
-            session.headers.update(get_browser_headers(user_agent))
-            
-            # Create YouTube object dengan custom session
-            yt = YouTube(
-                url,
-                client=client_type,
-                use_oauth=False,
-                allow_oauth_cache=False,
-                on_progress_callback=on_progress
-            )
-            
-            # Inject custom session ke pytubefix
-            if hasattr(yt, '_session'):
-                yt._session = session
-            
-            st.info(f"📹 **{yt.title}**")
-            st.info(f"⏱️ **{yt.length // 60}:{yt.length % 60:02d}** | 👁️ **{yt.views:,}** views")
-            
-            # Get best progressive stream
-            stream = yt.streams.filter(
-                progressive=True,
-                file_extension='mp4'
-            ).order_by('resolution').desc().first()
-            
-            if not stream:
-                st.warning("Progressive stream tidak tersedia, mencoba adaptive...")
-                stream = yt.streams.filter(
-                    adaptive=True,
-                    file_extension='mp4',
-                    type='video'
-                ).order_by('resolution').desc().first()
-            
-            if not stream:
-                raise Exception("Tidak ada stream yang tersedia")
-            
-            st.write(f"⬇️ Resolusi: **{stream.resolution}** | Size: **{stream.filesize_mb:.1f} MB**")
-            
-            # Download dengan progress
-            progress_placeholder = st.empty()
-            progress_bar = st.progress(0)
-            
-            def progress_callback(stream, chunk, bytes_remaining):
-                total_size = stream.filesize
-                bytes_downloaded = total_size - bytes_remaining
-                percentage = (bytes_downloaded / total_size) * 100
+            try:
+                user_agent = get_random_user_agent()
+                retry_text = f" (Retry {retry + 1}/{max_retries})" if retry > 0 else ""
                 
-                progress_bar.progress(min(percentage / 100, 1.0))
-                progress_placeholder.text(f"📥 {percentage:.1f}% ({bytes_downloaded/(1024*1024):.1f}/{total_size/(1024*1024):.1f} MB)")
-            
-            yt.register_on_progress_callback(progress_callback)
-            
-            with st.spinner("Mendownload..."):
-                stream.download(output_path=TEMP_DIR, filename="source.mp4")
-            
-            progress_bar.progress(1.0)
-            progress_placeholder.empty()
-            
-            st.success(f"✅ Download berhasil dengan **{client_name}**!")
-            return True
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            last_error = str(e)
-            
-            # Check error type
-            if '403' in error_msg or 'forbidden' in error_msg:
-                st.warning(f"⚠️ {client_name}: Blocked (403)")
-            elif '429' in error_msg:
-                st.warning(f"⚠️ {client_name}: Rate limited (429)")
-            elif 'bot' in error_msg:
-                st.warning(f"⚠️ {client_name}: Bot detection")
-            else:
-                st.warning(f"⚠️ {client_name}: {str(e)[:100]}")
-            
-            # Continue to next method
-            continue
+                st.write(f"🔄 Attempt #{attempt_count}: **{client_name}**{retry_text}")
+                st.caption(f"User-Agent: `{user_agent[:60]}...`")
+                
+                if retry > 0:
+                    delay = min(2 ** retry, 10)
+                    with st.spinner(f"Waiting {delay}s..."):
+                        time.sleep(delay)
+                
+                # Create YouTube object dengan cookies
+                if cookies_path and os.path.exists(cookies_path):
+                    st.info("🍪 Using cookies for authentication...")
+                    
+                    yt = YouTube(
+                        url,
+                        client=client_type,
+                        use_oauth=False,
+                        allow_oauth_cache=True,
+                        on_progress_callback=on_progress
+                    )
+                    
+                    # Load cookies into pytubefix
+                    try:
+                        with open(cookies_path, 'r', encoding='utf-8') as f:
+                            cookies_content = f.read()
+                            cookies_dict = parse_cookies_txt(cookies_content)
+                            
+                            # Inject cookies ke session
+                            if hasattr(yt, '_session'):
+                                for name, value in cookies_dict.items():
+                                    yt._session.cookies.set(name, value, domain='.youtube.com')
+                            
+                            st.caption(f"✅ Loaded {len(cookies_dict)} cookies")
+                    except Exception as e:
+                        st.warning(f"⚠️ Cookies load error: {e}")
+                else:
+                    yt = YouTube(
+                        url,
+                        client=client_type,
+                        use_oauth=False,
+                        allow_oauth_cache=False,
+                        on_progress_callback=on_progress
+                    )
+                
+                # Custom headers
+                import requests
+                session = requests.Session()
+                session.headers.update(get_browser_headers(user_agent))
+                
+                if hasattr(yt, '_session'):
+                    yt._session.headers.update(get_browser_headers(user_agent))
+                
+                st.info(f"📹 **{yt.title}**")
+                st.info(f"⏱️ **{yt.length // 60}:{yt.length % 60:02d}** | 👁️ **{yt.views:,}** views")
+                
+                # Get stream
+                stream = yt.streams.filter(
+                    progressive=True,
+                    file_extension='mp4'
+                ).order_by('resolution').desc().first()
+                
+                if not stream:
+                    st.warning("Progressive not available, trying adaptive...")
+                    stream = yt.streams.filter(
+                        adaptive=True,
+                        file_extension='mp4',
+                        type='video'
+                    ).order_by('resolution').desc().first()
+                
+                if not stream:
+                    raise Exception("No streams available")
+                
+                st.write(f"⬇️ Resolution: **{stream.resolution}** | Size: **{stream.filesize_mb:.1f} MB**")
+                
+                # Progress callback
+                progress_placeholder = st.empty()
+                progress_bar = st.progress(0)
+                
+                def progress_callback(stream, chunk, bytes_remaining):
+                    total_size = stream.filesize
+                    bytes_downloaded = total_size - bytes_remaining
+                    percentage = (bytes_downloaded / total_size) * 100
+                    
+                    progress_bar.progress(min(percentage / 100, 1.0))
+                    progress_placeholder.text(f"📥 {percentage:.1f}% ({bytes_downloaded/(1024*1024):.1f}/{total_size/(1024*1024):.1f} MB)")
+                
+                yt.register_on_progress_callback(progress_callback)
+                
+                with st.spinner("Downloading..."):
+                    stream.download(output_path=TEMP_DIR, filename="source.mp4")
+                
+                progress_bar.progress(1.0)
+                progress_placeholder.empty()
+                
+                st.success(f"✅ Download successful with **{client_name}** (Attempt #{attempt_count})!")
+                return True
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                last_error = str(e)
+                
+                if 'login' in error_msg or 'sign in' in error_msg:
+                    st.warning(f"⚠️ {client_name} {retry_text}: Requires login/cookies")
+                elif '403' in error_msg or 'forbidden' in error_msg:
+                    st.warning(f"⚠️ {client_name} {retry_text}: Blocked (403)")
+                elif '429' in error_msg:
+                    st.warning(f"⚠️ {client_name} {retry_text}: Rate limited (429)")
+                else:
+                    st.warning(f"⚠️ {client_name} {retry_text}: {str(e)[:100]}")
+                
+                if retry < max_retries - 1:
+                    continue
+                else:
+                    break
     
-    # All methods failed
-    st.error(f"❌ Semua metode gagal. Last error: {last_error}")
+    st.error(f"❌ All methods failed after {attempt_count} attempts.")
     
-    st.info("""
-    💡 **Alternatif Solusi:**
+    with st.expander("🔍 Error Details"):
+        st.code(last_error)
     
-    1. **Gunakan Upload Manual** (paling reliable)
-    2. **Coba lagi beberapa saat** (mungkin rate limit)
-    3. **Gunakan VPN** jika di-block regional
-    4. **Download di lokal** dengan yt-dlp lalu upload
-    """)
+    if 'login' in str(last_error).lower() or 'sign in' in str(last_error).lower():
+        st.error("""
+        🔐 **Video ini membutuhkan login!**
+        
+        Upload cookies.txt untuk bypass:
+        1. Aktifkan "Use Cookies" di sidebar
+        2. Upload file cookies.txt dari browser
+        """)
     
     return False
 
 # ==========================================
-# VIDEO PROCESSING
+# VIDEO PROCESSING (same as before)
 # ==========================================
 def check_ffmpeg():
     try:
@@ -247,14 +283,8 @@ def check_ffmpeg():
 
 def get_video_info(video_path):
     try:
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
-            '-show_streams',
-            video_path
-        ]
+        cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', 
+               '-show_format', '-show_streams', video_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         data = json.loads(result.stdout)
         
@@ -287,23 +317,15 @@ def generate_intervals(duration, num_clips, clip_len):
 def create_shorts_clip(input_video, output_path, start_time, duration):
     try:
         cmd = [
-            'ffmpeg', '-y',
-            '-ss', str(start_time),
-            '-i', input_video,
-            '-t', str(duration),
-            '-vf', 'crop=ih*9/16:ih,scale=1080:1920',
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-movflags', '+faststart',
+            'ffmpeg', '-y', '-ss', str(start_time), '-i', input_video,
+            '-t', str(duration), '-vf', 'crop=ih*9/16:ih,scale=1080:1920',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
             output_path
         ]
         
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         return process.returncode == 0 and os.path.exists(output_path)
-            
     except Exception as e:
         st.error(f"Error: {e}")
         return False
@@ -311,20 +333,18 @@ def create_shorts_clip(input_video, output_path, start_time, duration):
 # ==========================================
 # UI
 # ==========================================
-st.title("🥷 Auto Shorts - Stealth Mode")
-st.caption("✨ Download dengan User-Agent rotation & browser-like headers")
+st.title("🥷 Auto Shorts - Stealth Mode + Cookies")
+st.caption("✨ Support untuk video yang butuh login dengan cookies.txt")
 
-# Info banner
 st.success("""
-🔒 **Stealth Features Active:**
-- ✅ Random User-Agent dari pool 14+ browser
-- ✅ Browser-like headers (Accept, Sec-Fetch, DNT, dll)
-- ✅ Auto retry dengan berbeda client
-- ✅ Random delays untuk meniru human behavior
-- ✅ Multiple client fallback (Android, iOS, Web, Creator)
+🔒 **Features:**
+- ✅ User-Agent rotation (14+ browsers)
+- ✅ Browser-like headers
+- ✅ **Cookies support untuk video login-only**
+- ✅ Auto retry dengan exponential backoff
+- ✅ Multi-client fallback
 """)
 
-# Check FFmpeg
 if not check_ffmpeg():
     st.error("❌ FFmpeg tidak tersedia")
     st.stop()
@@ -337,146 +357,153 @@ st.success("✅ FFmpeg tersedia")
 with st.sidebar:
     st.header("⚙️ Input")
     
-    input_type = st.radio("Pilih metode:", ["YouTube URL (Stealth)", "Upload Manual"])
+    input_type = st.radio("Method:", ["YouTube URL (Stealth)", "Upload Manual"])
     
     url = None
     uploaded_file = None
-    download_method = "auto"
+    cookies_path = None
+    use_cookies = False
     
     if input_type == "YouTube URL (Stealth)":
         url = st.text_input("🔗 URL YouTube", placeholder="https://youtube.com/watch?v=...")
         
         st.divider()
-        st.subheader("🎯 Download Method")
+        st.subheader("🍪 Cookies (Optional)")
         
-        download_method = st.selectbox(
-            "Pilih strategi:",
-            [
-                "auto",
-                "ANDROID",
-                "ANDROID_CREATOR",
-                "IOS",
-                "WEB",
-                "WEB_CREATOR"
-            ],
-            help="""
-            - auto: Coba semua metode secara otomatis
-            - ANDROID: Android mobile app
-            - ANDROID_CREATOR: Android Creator Studio
-            - IOS: iOS Safari
-            - WEB: Desktop browser
-            - WEB_CREATOR: Desktop Creator Studio
-            """
+        use_cookies = st.checkbox(
+            "Use Cookies", 
+            help="Untuk video yang butuh login/private/restricted"
         )
         
-        st.info(f"""
-        **Mode: {download_method.upper()}**
+        if use_cookies:
+            cookies_file = st.file_uploader(
+                "Upload cookies.txt",
+                type=['txt'],
+                help="Netscape format cookies dari browser"
+            )
+            
+            if cookies_file:
+                cookies_path = save_cookies_file(cookies_file)
         
-        {'Akan mencoba semua metode secara otomatis dengan user-agent berbeda' if download_method == 'auto' else f'Menggunakan {download_method} client dengan random user-agent'}
-        """)
+        st.divider()
+        st.subheader("🎯 Settings")
+        
+        download_method = st.selectbox(
+            "Client:",
+            ["auto", "ANDROID", "WEB", "IOS", "ANDROID_CREATOR", "WEB_CREATOR"]
+        )
+        
+        max_retries = st.slider("Retries per Method", 1, 5, 3)
     else:
         uploaded_file = st.file_uploader("📤 Upload MP4", type=['mp4'])
     
     st.divider()
     st.subheader("⚙️ Clip Settings")
     num_clips = st.slider("Jumlah Klip", 1, 5, 2)
-    clip_duration = st.slider("Durasi per Klip (detik)", 15, 60, 30)
+    clip_duration = st.slider("Durasi (detik)", 15, 60, 30)
     
     st.divider()
     btn_start = st.button("🚀 Process", type="primary", use_container_width=True)
 
 # ==========================================
-# INFO PANEL
+# INFO: CARA MENDAPATKAN COOKIES
 # ==========================================
-with st.expander("🔐 Cara Kerja Stealth Mode"):
+with st.expander("🍪 Cara Mendapatkan cookies.txt"):
     st.markdown("""
-    ### 🎭 User-Agent Spoofing
+    ### Method 1: Browser Extension (Recommended) ⭐
     
-    App ini menggunakan pool **14+ real browser user-agents**:
-    - Chrome (Windows, macOS, Android)
-    - Firefox (Windows)
-    - Safari (macOS, iOS, iPad)
-    - Edge (Windows)
+    **Chrome/Edge:**
+    1. Install extension: **"Get cookies.txt LOCALLY"**
+       - https://chrome.google.com/webstore/detail/get-cookiestxt-locally/
+    2. Login ke YouTube
+    3. Klik extension icon
+    4. Download cookies.txt
+    5. Upload ke app ini
     
-    User-agent di-rotate secara random untuk setiap request.
-    
-    ---
-    
-    ### 🌐 Browser-Like Headers
-    
-    Request dilengkapi dengan headers yang sama persis dengan browser asli:
-    - `Accept`, `Accept-Language`, `Accept-Encoding`
-    - `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-Site`
-    - `DNT` (Do Not Track)
-    - `Upgrade-Insecure-Requests`
-    - Dan lain-lain
+    **Firefox:**
+    1. Install addon: **"cookies.txt"**
+       - https://addons.mozilla.org/firefox/addon/cookies-txt/
+    2. Login ke YouTube
+    3. Klik addon icon
+    4. Export cookies
+    5. Upload ke app ini
     
     ---
     
-    ### 🔄 Auto Retry Strategy
+    ### Method 2: Manual (Developer Tools)
     
-    Jika satu metode gagal, otomatis mencoba metode lain:
-    1. Android Mobile
-    2. Android Creator Studio
-    3. Android Music
-    4. iOS Safari
-    5. iOS Music
-    6. Desktop Browser
-    7. Desktop Creator Studio
-    
-    ---
-    
-    ### ⏱️ Human-Like Behavior
-    
-    - Random delay 100-500ms antar request
-    - User-agent rotation dengan probabilitas 20%
-    - Mimics natural browsing patterns
+    1. Login ke YouTube
+    2. Tekan **F12** → Tab **Application/Storage**
+    3. Pilih **Cookies** → **https://youtube.com**
+    4. Copy semua cookies dalam format Netscape:
+       ```
+       .youtube.com	TRUE	/	TRUE	0	COOKIE_NAME	COOKIE_VALUE
+       ```
+    5. Save sebagai `cookies.txt`
+    6. Upload ke app
     
     ---
     
-    ### 📊 Success Rate
+    ### Method 3: yt-dlp (untuk technical users)
     
-    Dengan kombinasi teknik di atas, success rate meningkat menjadi **~85-90%** 
-    dibanding tanpa stealth mode (~40-50%).
+    ```bash
+    # Extract cookies dari browser
+    yt-dlp --cookies-from-browser chrome --cookies cookies.txt [URL]
+    ```
+    
+    ---
+    
+    ### ⚠️ Important Notes:
+    
+    - **Jangan share cookies.txt** - berisi data login Anda
+    - Cookies bersifat **temporary** - expired dalam beberapa minggu
+    - File cookies akan **dihapus otomatis** setelah proses
+    - Hanya digunakan untuk request ke YouTube, tidak disimpan
+    
+    ---
+    
+    ### Format cookies.txt (Netscape):
+    
+    ```
+    # Netscape HTTP Cookie File
+    .youtube.com	TRUE	/	TRUE	1735689600	CONSENT	YES+
+    .youtube.com	TRUE	/	TRUE	1735689600	VISITOR_INFO1_LIVE	xxx
+    .youtube.com	TRUE	/	TRUE	1735689600	YSC	xxx
+    ```
     """)
 
 with st.expander("🆘 Troubleshooting"):
     st.markdown("""
-    ### Problem: Masih kena 403
-    
-    **Penyebab:**
-    - IP address di-block oleh YouTube
-    - Video restricted/private
-    - Region lock
+    ### Error: "Requires login to view"
     
     **Solusi:**
-    1. Gunakan VPN
-    2. Tunggu beberapa saat (cooldown)
-    3. Coba video lain
-    4. Gunakan Upload Manual
+    1. ✅ Aktifkan "Use Cookies"
+    2. ✅ Upload cookies.txt dari browser yang sudah login
+    3. ✅ Pastikan cookies fresh (baru di-export)
     
     ---
     
-    ### Problem: Semua metode gagal
+    ### Error: "Invalid cookies"
+    
+    **Penyebab:**
+    - Format cookies salah
+    - Cookies expired
+    - Export dari browser yang salah
     
     **Solusi:**
-    1. Download video di lokal:
-       ```bash
-       yt-dlp -f "best[height<=720]" [URL]
-       ```
-    2. Upload ke app menggunakan "Upload Manual"
+    - Re-export cookies dengan extension
+    - Pastikan format Netscape
+    - Login ulang ke YouTube lalu export
     
     ---
     
-    ### Problem: Download sangat lambat
-    
-    **Penyebab:**
-    - Streamlit Cloud bandwidth terbatas
-    - Video size terlalu besar
+    ### Error: Tetap 403 meski pakai cookies
     
     **Solusi:**
-    - Pilih video lebih pendek
-    - Upload manual
+    - Cookies mungkin expired
+    - Re-export cookies baru
+    - Coba client method berbeda
+    - Gunakan Upload Manual
     """)
 
 # ==========================================
@@ -486,20 +513,26 @@ if btn_start:
     source_video = f"{TEMP_DIR}/source.mp4"
     success = False
     
-    # Step 1: Get video
     st.divider()
-    st.subheader("📥 Step 1: Download/Upload")
+    st.subheader("📥 Step 1: Acquire Video")
     
     if input_type == "YouTube URL (Stealth)":
         if not url:
-            st.error("⚠️ Masukkan URL YouTube!")
+            st.error("⚠️ Masukkan URL!")
             st.stop()
         
-        success = download_stealth_mode(url, download_method)
-    
-    else:  # Upload
+        if use_cookies and not cookies_path:
+            st.warning("⚠️ Cookies enabled tapi file belum diupload")
+        
+        success = download_with_cookies(
+            url, 
+            cookies_path if use_cookies else None,
+            download_method, 
+            max_retries
+        )
+    else:
         if not uploaded_file:
-            st.error("⚠️ Upload file dulu!")
+            st.error("⚠️ Upload file!")
             st.stop()
         
         with st.spinner("📤 Uploading..."):
@@ -511,21 +544,27 @@ if btn_start:
     if not success:
         st.stop()
     
-    # Step 2: Video info
+    # Cleanup cookies after use
+    if cookies_path and os.path.exists(cookies_path):
+        try:
+            os.remove(cookies_path)
+            st.caption("🗑️ Cookies cleaned for security")
+        except:
+            pass
+    
     st.divider()
-    st.subheader("📊 Step 2: Video Info")
+    st.subheader("📊 Step 2: Analyze Video")
     
     info = get_video_info(source_video)
     if not info:
-        st.error("❌ Gagal membaca video")
+        st.error("❌ Failed to read video")
         st.stop()
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("Durasi", f"{int(info['duration'])}s")
-    col2.metric("Resolusi", f"{info['width']}x{info['height']}")
+    col1.metric("Duration", f"{int(info['duration'])}s")
+    col2.metric("Resolution", f"{info['width']}x{info['height']}")
     col3.metric("Size", f"{os.path.getsize(source_video)/(1024*1024):.1f} MB")
     
-    # Step 3: Generate clips
     st.divider()
     st.subheader("🎬 Step 3: Generate Clips")
     
@@ -538,14 +577,12 @@ if btn_start:
         clip_name = f"Short_{i+1}.mp4"
         final_clip = f"{OUT_DIR}/{clip_name}"
         
-        with st.spinner(f"Processing klip {i+1}/{len(intervals)}..."):
-            if create_shorts_clip(source_video, final_clip, interval['start'], interval['duration']):
-                clip_results.append(final_clip)
-                st.success(f"✅ Klip {i+1}")
+        if create_shorts_clip(source_video, final_clip, interval['start'], interval['duration']):
+            clip_results.append(final_clip)
+            st.success(f"✅ Clip {i+1}")
         
         progress_bar.progress((i + 1) / len(intervals))
     
-    # Step 4: Results
     st.divider()
     st.subheader("✅ Step 4: Results")
     
@@ -557,17 +594,17 @@ if btn_start:
                     st.video(clip_path)
                     with open(clip_path, 'rb') as f:
                         st.download_button(
-                            f"⬇️ Download",
+                            "⬇️ Download",
                             f,
                             file_name=os.path.basename(clip_path),
                             mime="video/mp4",
-                            use_container_width=True
+                            use_container_width=True,
+                            key=f"dl_{i}_{j}"
                         )
         
-        st.success(f"🎉 {len(clip_results)} klip berhasil!")
+        st.success(f"🎉 {len(clip_results)} clips created!")
         st.balloons()
     
-    # Cleanup
     try:
         if os.path.exists(source_video):
             os.remove(source_video)
