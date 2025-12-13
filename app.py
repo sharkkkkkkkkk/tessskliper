@@ -3,44 +3,24 @@ import os
 import subprocess
 import yt_dlp
 import shutil
-import random
 
 # ==========================================
-# KONFIGURASI HALAMAN
+# KONFIGURASI
 # ==========================================
-st.set_page_config(page_title="Auto Shorts (Proxy Mode)", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="Auto Shorts (Cookie Mode)", page_icon="🍪", layout="centered")
 
 TEMP_DIR = "temp_video"
 OUT_DIR = "output_shorts"
+COOKIE_FILE = "cookies.txt"
 
-# Bersihkan folder temp saat restart
+# Bersihkan folder
 if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)
 if os.path.exists(OUT_DIR): shutil.rmtree(OUT_DIR)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ==========================================
-# 1. DAFTAR PROXY GRATIS (Update Berkala)
-# ==========================================
-# Tips: Ambil list proxy fresh dari: https://spys.one/en/http-proxy-list/
-# Format: "http://IP:PORT"
-PROXY_LIST = [
-    # Proxy Indonesia/Asia (Biasanya lebih cepat)
-    "http://202.152.50.229:8080",
-    "http://103.152.118.158:80",
-    "http://117.54.114.101:80",
-    # Proxy US/Europe (Cadangan)
-    "http://198.59.191.234:8080",
-    "http://104.248.63.15:3128",
-    "http://64.225.4.30:3128",
-    "http://209.127.191.180:9279",
-]
-
-def get_random_proxy():
-    return random.choice(PROXY_LIST)
-
-# ==========================================
-# 2. CEK FFMPEG
+# 1. CEK FFMPEG
 # ==========================================
 def check_ffmpeg():
     try:
@@ -50,51 +30,44 @@ def check_ffmpeg():
         return False
 
 # ==========================================
-# 3. DOWNLOADER DENGAN PROXY
+# 2. DOWNLOADER DENGAN COOKIES
 # ==========================================
-def download_video_proxy(url):
+def download_video_cookies(url, cookie_path=None):
     output_filename = "source.mp4"
     output_path = os.path.join(TEMP_DIR, output_filename)
     
-    # Coba maksimal 3 kali dengan proxy berbeda
-    max_retries = 3
-    
-    for i in range(max_retries):
-        current_proxy = get_random_proxy()
-        
-        # Opsi yt-dlp
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': output_path,
-            'quiet': True,
-            'no_warnings': True,
-            'geo_bypass': True,
-            # SETTING PROXY DISINI
-            'proxy': current_proxy,
-            # Socket timeout biar gak nunggu proxy mati kelamaan
-            'socket_timeout': 10,
-        }
+    # Opsi yt-dlp
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': output_path,
+        'quiet': True,
+        'no_warnings': True,
+        'geo_bypass': True,
+        # User agent agar terlihat seperti browser biasa
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    }
 
-        try:
-            proxy_msg = f"Percobaan {i+1}/{max_retries} menggunakan Proxy: {current_proxy}"
-            print(proxy_msg) # Log ke console server
+    # Jika user upload cookies, gunakan!
+    if cookie_path:
+        ydl_opts['cookiefile'] = cookie_path
+
+    try:
+        with st.status("📥 Sedang mendownload (Bypass 403)...", expanded=True) as status:
+            if cookie_path:
+                st.write("🍪 Menggunakan Cookies User...")
             
-            with st.status(f"📥 {proxy_msg}...", expanded=True) as status:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-                status.update(label="✅ Download Selesai!", state="complete", expanded=False)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+            status.update(label="✅ Download Selesai!", state="complete", expanded=False)
             
-            return True, output_path # Jika sukses, langsung return
+        return True, output_path
 
-        except Exception as e:
-            st.warning(f"⚠️ Proxy {current_proxy} gagal, mencoba proxy lain...")
-            continue # Lanjut ke loop berikutnya (proxy baru)
-
-    # Jika sudah 3x mencoba masih gagal
-    return False, "Semua proxy gagal atau diblokir. Coba update daftar PROXY_LIST."
+    except Exception as e:
+        return False, str(e)
 
 # ==========================================
-# 4. PROCESSING (FFMPEG)
+# 3. PROCESSING (FFMPEG)
 # ==========================================
 def get_video_duration(input_path):
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_path]
@@ -126,6 +99,7 @@ def process_clips(input_path, num_clips, clip_duration):
         output_name = f"Short_Clip_{i+1}.mp4"
         output_file = os.path.join(OUT_DIR, output_name)
         
+        # Crop 9:16 Center
         filter_complex = "crop=ih*(9/16):ih:(iw-ow)/2:0,scale=1080:1920"
         
         cmd = [
@@ -143,27 +117,43 @@ def process_clips(input_path, num_clips, clip_duration):
     return generated_files
 
 # ==========================================
-# UI
+# UI APLIKASI
 # ==========================================
-st.title("🛡️ Cloud Auto Shorts + Proxy")
-st.markdown("Menggunakan **Rotasi Proxy** untuk menembus blokir YouTube di Cloud.")
+st.title("🍪 Auto Shorts (Bypass 403)")
+st.caption("Gunakan Cookies untuk melewati blokir YouTube di Cloud.")
 
 if not check_ffmpeg():
-    st.error("❌ FFmpeg belum terinstall. Cek file packages.txt!")
+    st.error("❌ FFmpeg belum terinstall. Pastikan file 'packages.txt' ada di GitHub.")
     st.stop()
 
+# 1. INPUT COOKIES
+with st.expander("🔑 Langkah 1: Upload Cookies (Wajib jika Error 403)", expanded=True):
+    st.info("Download ekstensi 'Get cookies.txt LOCALLY' di Chrome, export file, lalu upload di sini.")
+    uploaded_cookie = st.file_uploader("Upload file cookies.txt", type=["txt"])
+    
+    cookie_path = None
+    if uploaded_cookie:
+        with open(COOKIE_FILE, "wb") as f:
+            f.write(uploaded_cookie.getbuffer())
+        cookie_path = COOKIE_FILE
+        st.success("✅ Cookies siap digunakan!")
+
+# 2. INPUT URL & SETTING
+st.divider()
 url_input = st.text_input("🔗 URL YouTube", placeholder="https://youtube.com/watch?v=...")
 col1, col2 = st.columns(2)
 with col1: num_clips = st.slider("Jumlah Klip", 1, 5, 2)
 with col2: duration = st.slider("Durasi (detik)", 15, 60, 30)
 
-if st.button("🚀 PROSES DENGAN VPN/PROXY", type="primary", use_container_width=True):
+# 3. TOMBOL PROSES
+if st.button("🚀 PROSES VIDEO", type="primary", use_container_width=True):
     if url_input:
-        success, result = download_video_proxy(url_input)
+        # Panggil fungsi download dengan path cookies
+        success, result = download_video_cookies(url_input, cookie_path)
         
         if success:
             source_path = result
-            st.success("✅ Video berhasil didownload lewat jalur belakang!")
+            st.success("✅ Video berhasil didownload!")
             
             with st.spinner("⚙️ Memotong video..."):
                 clips = process_clips(source_path, num_clips, duration)
@@ -180,6 +170,7 @@ if st.button("🚀 PROSES DENGAN VPN/PROXY", type="primary", use_container_width
                 st.error("Gagal clipping.")
         else:
             st.error(f"Gagal: {result}")
-            st.info("💡 Solusi: Coba refresh halaman dan tekan tombol lagi (agar mencoba proxy acak yang lain).")
+            if "403" in str(result) or "Sign in" in str(result):
+                st.warning("⚠️ Masih Error 403? Pastikan file cookies.txt yang Anda upload masih baru (Fresh).")
     else:
         st.warning("Masukkan URL dulu.")
